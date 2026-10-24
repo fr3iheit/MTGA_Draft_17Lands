@@ -30,6 +30,15 @@ import argparse
 import os
 import sys
 import logging
+
+# PATCH (2026-10-24): disable cyclic GC. At draft completion the math worker
+# (numba first-call -> lazy scipy import) runs a GC cycle on a worker thread,
+# which finalizes Tk objects off the main thread -> concurrent Tcl access ->
+# "Tcl_AppendFormatToObj called with shared object" -> SIGTRAP. Refcounting
+# still frees acyclic garbage; only cyclic collection is disabled.
+import gc
+
+gc.disable()
 from src import constants
 from src.configuration import read_configuration, write_configuration
 from src.limited_sets import LimitedSets
