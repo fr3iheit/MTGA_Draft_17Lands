@@ -878,6 +878,13 @@ class ModernTreeview(ttk.Treeview):
             ("high_fit", "#0c4a6e", "#e0f2fe"),
             ("picked", "#15803d", "#ffffff"),
         ]:
+            if t == "picked":
+                # Route through the animation cache: rewriting the tag here
+                # (init + every theme refresh) would leave the cached colors
+                # stale and suppress the next animation frame that asks for
+                # them back.
+                self._set_picked_tag_colors(b, f)
+                continue
             self.tag_configure(
                 (
                     f"{t}_card"

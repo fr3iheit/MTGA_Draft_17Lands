@@ -598,3 +598,37 @@ class TestThemeChangeGate:
             Theme.apply(root, "Dark")
             root.update()
             rebuild.assert_called_once()
+
+
+class TestPickedAnimationCache:
+    @pytest.fixture
+    def root(self):
+        root = tkinter.Tk()
+        Theme.apply(root, "Dark")
+        yield root
+        root.destroy()
+
+    @staticmethod
+    def _picked_bg(tree):
+        # ttk.Treeview has no tag_cget; query the tag option through Tcl.
+        return str(tree.tk.call(tree._w, "tag", "configure", "picked", "-background"))
+
+    def test_theme_refresh_keeps_animation_cache_in_sync(self, root):
+        """Regression (2026-10-25 review): _apply_dynamic_row_colors re-applies
+        the picked tag on init and on theme refreshes. When that write bypassed
+        _set_picked_tag_colors, the cached colors went stale and the guard
+        suppressed the first animation frame after new picks."""
+        tree = ModernTreeview(root, columns=["Card"])
+
+        # Animation frame 0 applied and cached...
+        tree._set_picked_tag_colors("#14532d", "#f8fafc")
+        assert self._picked_bg(tree) == "#14532d"
+
+        # ...then a theme refresh re-applies the settle colors.
+        tree._apply_dynamic_row_colors()
+        assert self._picked_bg(tree) == "#15803d"
+
+        # New picks restart the animation at frame 0; the guard must apply
+        # the frame instead of matching it against the stale cache.
+        tree._set_picked_tag_colors("#14532d", "#f8fafc")
+        assert self._picked_bg(tree) == "#14532d"
