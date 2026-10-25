@@ -634,6 +634,17 @@ class ModernTreeview(ttk.Treeview):
         self._last_picked_items = set()
         self._animate_picked_row()
 
+    def _set_picked_tag_colors(self, bg, fg):
+        """Applies the picked-tag colors only when they change.
+
+        Reconfiguring the tag on every tick dirtied the widget ~15x/s, which
+        kept macOS recompositing the whole window at every vsync even when
+        nothing on screen was changing.
+        """
+        if getattr(self, "_picked_tag_colors", None) != (bg, fg):
+            self.tag_configure("picked", background=bg, foreground=fg)
+            self._picked_tag_colors = (bg, fg)
+
     def _animate_picked_row(self):
         if not self.winfo_exists():
             return
@@ -688,16 +699,14 @@ class ModernTreeview(ttk.Treeview):
 
             if self._pulse_step < len(bg_colors):
                 idx = self._pulse_step
-                self.tag_configure(
-                    "picked", background=bg_colors[idx], foreground=fg_colors[idx]
-                )
+                self._set_picked_tag_colors(bg_colors[idx], fg_colors[idx])
                 self._pulse_step += 1
             else:
                 # Settle on final solid color after animation ends
-                self.tag_configure("picked", background="#15803d", foreground="#ffffff")
+                self._set_picked_tag_colors("#15803d", "#ffffff")
         else:
             self._pulse_step = 0
-            self.tag_configure("picked", background="#15803d", foreground="#ffffff")
+            self._set_picked_tag_colors("#15803d", "#ffffff")
 
         # Loop roughly at 15 FPS
         self.after(65, self._animate_picked_row)
