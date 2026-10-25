@@ -226,9 +226,35 @@ def load_data(args, config, progress_callback):
         logging.getLogger().removeHandler(splash_handler)
 
 
+def _warm_advisor_simulator():
+    """Compile the numba deck simulator once, on the main thread.
+
+    Without this, the first simulate_deck call JIT-compiles on whatever
+    worker first needs it; numba's compiler runs a large import storm that
+    races the Tk mainloop's initial layout and corrupts the Tcl
+    interpreter (repeated startup SIGSEGVs on macOS). Compiling here,
+    before any Tk interpreter or worker thread exists, removes that
+    window; cache=True keeps later launches cheap.
+    """
+    try:
+        from src.advisor.simulator import simulate_deck
+
+        simulate_deck(
+            [
+                {"count": 17, "types": ["Land"], "colors": ["W"]},
+                {"count": 23, "mana_cost": "{1}{W}", "cmc": 2},
+            ],
+            iterations=10,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("advisor simulator warm-up failed")
+
+
 def main():
     import time
     from src import constants
+
+    _warm_advisor_simulator()
 
     # 30-day draft log cleanup
     if os.path.exists(constants.DRAFT_LOG_FOLDER):
