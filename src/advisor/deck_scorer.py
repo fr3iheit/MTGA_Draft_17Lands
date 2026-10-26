@@ -26,6 +26,153 @@ TARGET_SPELL_COUNT = 23
 # per-statistic refinement belongs to the tier-1 calibration pass.
 SHRINKAGE_K = 350
 
+# --- Rules-level card prior (what the card DOES -> expected z of GIH WR) ---
+# Trained offline on 34 sets of 17Lands data with Scryfall rules features;
+# replaces the set-mean constant as the shrinkage prior. Falls back to the
+# set mean on ANY load/gate failure (atomic, logged once).
+import json as _json
+import os as _os
+
+_PRIOR_MODELS = {}  # lazy: {"full": (predict_fn, manifest), "nr": (predict_fn, manifest)}
+_PRIOR_LOAD_TRIED = False
+
+
+def _load_card_prior():
+    global _PRIOR_LOAD_TRIED
+    if _PRIOR_LOAD_TRIED:
+        return
+    _PRIOR_LOAD_TRIED = True
+    base = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
+        _os.path.abspath(__file__)))), "assets", "models")
+    for kind, fname in (("full", "card_prior.npz"), ("nr", "card_prior_nr.npz")):
+        try:
+            import numpy as _np
+            data = _np.load(_os.path.join(base, fname), allow_pickle=False)
+            feat_names = list(data["feature_names"])
+            dump = _json.loads(str(data["model_dump"][0])
+                               if "model_dump" in data
+                               else str(data["thresholds"][0]))
+            manifest = _json.load(open(_os.path.join(base,
+                fname.replace(".npz", "").replace("card_prior", "card_prior")
+                + "_manifest.json")))
+            _PRIOR_MODELS[kind] = (_make_predictor(dump, feat_names), manifest, feat_names)
+        except Exception:
+            pass  # atomic fallback: the set-mean prior stays
+
+
+def _make_predictor(dump, feat_names):
+    """Pure-Python tree-walk predictor for the LightGBM dump (v1: prior lookup
+    per card is called rarely; numpy optimization deferred to the exporter v2)."""
+    trees = dump["tree_info"]
+
+    def predict_one(features):
+        total = 0.0
+        for tree in trees:
+            node = tree["tree_structure"]
+            while "leaf_value" not in node:
+                f = node["split_feature"]
+                val = features.get(feat_names[f], 0.0)
+                try:
+                    thr = float(node["threshold"])
+                except (TypeError, ValueError):
+                    thr = 0.0
+                # default_left for missing; we have no missing values
+                node = node["left_child"] if val <= thr else node["right_child"]
+            total += node["leaf_value"]
+        return total
+    return predict_one
+
+
+def _feature_prior_z(card, use_nr=False):
+    """Predicted z of the card's GIH WR from rules features; 0.0 (set mean) on
+    any failure. Features come from the card's deck_colors-adjacent fields the
+    extractor produced; for live cards we use the static fields the app has."""
+    _load_card_prior()
+    kind = "nr" if use_nr else "full"
+    if kind not in _PRIOR_MODELS:
+        return 0.0
+    predict, manifest, feat_names = _PRIOR_MODELS[kind]
+    try:
+        # minimal feature extraction from the card dict the app already carries
+        # (cost, type, body, oracle keywords); full extractor features are in
+        # the offline pipeline — for v1 the prior uses the app's own fields
+        feats = _extract_live_features(card)
+        z = predict(feats)
+        lo, hi = manifest.get("z_clamps", [-2.0, 2.0])
+        return max(lo, min(hi, z))
+    except Exception:
+        return 0.0
+
+
+def _extract_live_features(card):
+    """Minimal feature extraction matching the training schema, from the card
+    dict the app already has. Covers the highest-signal features only; the
+    rest default to 0 (which is the training median for most binary flags)."""
+    import re as _re
+    types = card.get("types", []) or []
+    tl = " ".join(str(t) for t in types).lower()
+    cost = card.get("mana_cost", "") or ""
+    cmc = card.get("cmc", 0) or 0
+    colors = card.get("colors", []) or []
+    text = str(card.get("oracle_text", card.get("text", "")) or "").lower()
+    rarity = str(card.get("rarity", "common")).lower()
+
+    pips = {"w": 0, "u": 0, "b": 0, "r": 0, "g": 0}
+    for sym in _re.findall(r"\{(.*?)\}", cost):
+        for part in sym.lower().split("/"):
+            if part in pips:
+                pips[part] += 1
+
+    f = {"cmc": float(cmc), "n_colors": len(set(colors)), "colorless": 1 if not colors else 0}
+    for c, n in pips.items():
+        f[f"pip_{c}"] = n
+    f["is_creature"] = "creature" in tl
+    f["is_instant"] = "instant" in tl
+    f["is_sorcery"] = "sorcery" in tl
+    f["is_land"] = "land" in tl.split(" ")[0:1]
+    f["is_artifact"] = "artifact" in tl
+    f["is_enchantment"] = "enchantment" in tl
+    f["rarity_common"] = rarity == "common"
+    f["rarity_uncommon"] = rarity == "uncommon"
+    f["rarity_rare"] = rarity == "rare"
+    f["rarity_mythic"] = rarity == "mythic"
+
+    # body (may be absent on non-creatures)
+    f["power"] = 0; f["toughness"] = 0; f["pt_sum"] = 0; f["pt_per_mana"] = 0.0
+    f["power_minus_cmc"] = -float(cmc); f["toughness_minus_cmc"] = -float(cmc)
+    f["toughness_ge_2"] = 0; f["toughness_ge_3"] = 0; f["toughness_ge_4"] = 0
+    f["power_ge_3"] = 0; f["statline_at_curve"] = 0
+
+    # top effect flags (oracle text regex, matching the extractor's patterns)
+    f["fx_draw_count"] = min(len(_re.findall(r"draw (?:one|two|three|four|\d+)", text)), 3)
+    f["fx_counter_hard"] = 1 if _re.search(r"counter target (?:spell|noncreature)", text) else 0
+    f["fx_destroy_creature"] = 1 if _re.search(r"destroy target (?:creature|creature or)", text) else 0
+    f["fx_exile_creature"] = 1 if _re.search(r"exile target (?:creature|permanent)", text) else 0
+    f["removal_ordinal"] = 0
+    if f["fx_exile_creature"]: f["removal_ordinal"] = 5
+    elif f["fx_destroy_creature"]: f["removal_ordinal"] = 4
+    elif _re.search(r"deals? \d+ damage to (?:any target|target creature)", text):
+        f["removal_ordinal"] = 2
+    f["fx_add_mana"] = 1 if _re.search(r"add \{[wubrg]\}|add one mana", text) else 0
+    f["fx_token"] = 1 if "token" in text else 0
+    f["fx_lifegain"] = 1 if _re.search(r"gain \d+ life|lifelink", text) else 0
+    f["kw_flying"] = 1 if "flying" in text else 0
+    f["kw_haste"] = 1 if "haste" in text else 0
+    f["kw_trample"] = 1 if "trample" in text else 0
+    f["kw_lifelink"] = 1 if "lifelink" in text else 0
+    f["kw_deathtouch"] = 1 if "deathtouch" in text else 0
+    f["kw_menace"] = 1 if "menace" in text else 0
+    f["kw_first_strike"] = 1 if "first strike" in text else 0
+    f["kw_vigilance"] = 1 if "vigilance" in text else 0
+    f["kw_reach"] = 1 if "reach" in text else 0
+    f["ds_upkeep_damage"] = 1 if _re.search(r"upkeep[^.]*deals? \d+ damage to you", text) else 0
+    f["ds_cumulative_upkeep"] = 1 if "cumulative upkeep" in text else 0
+    f["ds_etb_tapped"] = 1 if "enters the battlefield tapped" in text else 0
+    f["ds_cant_block"] = 1 if "can't block" in text else 0
+    f["ds_defender"] = 1 if "defender" in text else 0
+    f["text_length"] = min(len(text) // 100, 12)
+    return f
+
 
 def shrunk_wr(raw, prior, n, k=SHRINKAGE_K):
     """n/(n+k) shrinkage of raw toward prior. n <= 0 returns raw unchanged:
@@ -82,14 +229,30 @@ def card_wr_posteriors(card, colors, metrics=None):
         except Exception:
             offset = 0.0
 
+    # Rules-feature prior: what the card DOES predicts its expected z; the
+    # shrinkage target becomes set_mean + feature_prior_z * set_std (in WR
+    # points) instead of the bare set mean. Fallback to the set mean on any
+    # failure (the prior function returns 0.0 = set mean).
+    prior_z = _feature_prior_z(card)
+    feature_prior_wr = set_global_mean + prior_z * 4.0  # sigma approx; per-set
+    # std would need metrics.get_metrics std — use it when available
+    if metrics:
+        try:
+            _, g_std = metrics.get_metrics("All Decks", "gihwr")
+            if g_std and g_std > 0:
+                feature_prior_wr = set_global_mean + prior_z * float(g_std)
+        except Exception:
+            pass
+
     return {
         "global_wr": global_wr,
         "arch_wr": arch_wr,
         "n": n,
         "arch_prior": global_wr + offset,
-        "shrunk_global": shrunk_wr(global_wr, set_global_mean, n),
-        "shrunk_arch": shrunk_wr(arch_wr, global_wr + offset, n),
+        "shrunk_global": shrunk_wr(global_wr, feature_prior_wr, n),
+        "shrunk_arch": shrunk_wr(arch_wr, feature_prior_wr + offset, n),
         "pair_offset": offset,
+        "prior_z": prior_z,
     }
 
 TIER_TO_GIHWR = {

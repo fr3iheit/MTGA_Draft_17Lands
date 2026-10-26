@@ -387,21 +387,25 @@ def test_shrunk_wr_formula_and_n_zero_passthrough():
     assert shrunk_wr(66.0, 54.0, 500) > shrunk_wr(64.0, 54.0, 500)
 
 
-def test_spike_card_rates_global_dominated():
+def test_spike_card_rates_global_dominated(monkeypatch):
     """A ten-game 64% spike is shrunk to the prior: the rating stays at the
     global-dominated value (offset 0 under flat metrics)."""
     from src.advisor.deck_scorer import get_card_rating
+    import src.advisor.deck_scorer as _ds
+    monkeypatch.setattr(_ds, "_feature_prior_z", lambda card, use_nr=False: 0.0)
 
     card = _post_card(samples=10)
     rating = get_card_rating(card, ["R", "G"], _flat_metrics())
     assert rating == pytest.approx(54.0, abs=0.3)
 
 
-def test_engine_blend_uses_shared_posterior_exact_number():
+def test_engine_blend_uses_shared_posterior_exact_number(monkeypatch):
     """global 54, arch 64, n=20000, k=2000, offset 0, progress 31 (w=0.6822):
     shrunk arch = 63.0909..., blended = 60.2016..., base = 73.256..."""
     from src.advisor.deck_scorer import SHRINKAGE_K
     from src.advisor.engine import DraftAdvisor
+    import src.advisor.deck_scorer as _ds
+    monkeypatch.setattr(_ds, "_feature_prior_z", lambda card, use_nr=False: 0.0)
 
     metrics = _flat_metrics(54.0, 4.0)
     pool = [
