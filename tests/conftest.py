@@ -168,6 +168,29 @@ def patch_dataset_skip_unresolved():
 
 
 @pytest.fixture(autouse=True)
+def clear_deck_cache_between_tests():
+    """GLOBAL_DECK_CACHE is module-level and keyed on (event_type, dataset_name,
+    len(pool), name:count signatures) — card stats are not part of the key, so two
+    tests with same-shaped pools would share cached variants across tests."""
+    from src.advisor import deck_builder
+
+    deck_builder.GLOBAL_DECK_CACHE.clear()
+    yield
+    deck_builder.GLOBAL_DECK_CACHE.clear()
+
+
+@pytest.fixture
+def production_resolution(monkeypatch):
+    """Opt into production ID-resolution semantics. The autouse
+    patch_dataset_skip_unresolved fixture flips Dataset.skip_unresolved_ids to False
+    for every test; tests that exercise unresolved-ID dropping must pin the
+    production default (True) with this fixture."""
+    from src.dataset import Dataset
+
+    monkeypatch.setattr(Dataset, "skip_unresolved_ids", True)
+
+
+@pytest.fixture(autouse=True)
 def isolate_dataset_index(tmp_path, monkeypatch):
     """Keep the persisted dataset index (Temp/dataset_index.json) out of tests:
     a mocked filename that matches a real file in Sets/ would otherwise be served
