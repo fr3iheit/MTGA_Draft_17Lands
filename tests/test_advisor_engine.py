@@ -679,3 +679,55 @@ def test_established_set_with_card_without_data_scores_zero():
     base = advisor._calculate_weighted_score(card, 10)
     # mapped from a 0.0 WR: 50 + ((0-54)/4)*15 = -152.5, clamped to 0
     assert base == 0.0
+
+
+# --- Cycle 3 item 3.5: lookahead caching (heuristic-only path) ---
+
+
+def test_lookahead_cache_hits_on_second_evaluation():
+    """Same pool + card twice: the second evaluation must not re-run the deck
+    scoring (the cache serves it), and the bonus is identical."""
+    from unittest.mock import patch
+
+    pool = [
+        {"name": f"WB Spell {i}", "colors": ["W", "B"], "types": ["Creature"],
+         "cmc": 3, "mana_cost": "{1}{W}{B}",
+         "deck_colors": {"All Decks": {"gihwr": 60.0, "samples": 10 ** 9}}}
+        for i in range(23)
+    ]
+    improver = {
+        "name": "W Splash Improver", "colors": ["W"], "types": ["Creature"],
+        "cmc": 2, "mana_cost": "{1}{W}",
+        "deck_colors": {"All Decks": {"gihwr": 72.0, "samples": 10 ** 9}},
+    }
+    pool += [
+        {"name": f"Dual BW {i}", "colors": ["B", "W"], "types": ["Land"],
+         "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+        for i in range(3)
+    ]
+
+    from src.advisor.engine import _LOOKAHEAD_CACHE
+
+    _LOOKAHEAD_CACHE.clear()  # module-level: an earlier test may share the signature
+    calls = []
+    advisor = DraftAdvisor(_FixMetrics(), pool)
+    real = DraftAdvisor._get_fast_best_deck_score
+
+    def spy(self, pool_, options, pool_size=None):
+        if len(pool_) == len(pool) + 1:  # the lookahead call, not base scoring
+            calls.append(1)
+        return real(self, pool_, options, pool_size=pool_size)
+
+    with patch.object(DraftAdvisor, "_get_fast_best_deck_score", spy):
+        first = advisor.evaluate_pack([improver], 1, current_pack=3)
+        advisor2 = DraftAdvisor(_FixMetrics(), pool)
+        second = advisor2.evaluate_pack([improver], 1, current_pack=3)
+
+    assert first[0].contextual_score == second[0].contextual_score
+    assert len(calls) >= 1  # first run scored
+    baseline_calls = len(calls)
+    advisor3 = DraftAdvisor(_FixMetrics(), pool)
+    with patch.object(DraftAdvisor, "_get_fast_best_deck_score", spy):
+        third = advisor3.evaluate_pack([improver], 1, current_pack=3)
+    assert len(calls) == baseline_calls  # served from cache, no re-scoring
+    assert third[0].contextual_score == first[0].contextual_score

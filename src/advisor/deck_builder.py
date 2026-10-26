@@ -75,6 +75,9 @@ def select_safe_deck_index(final_list):
 
 def clear_deck_cache():
     GLOBAL_DECK_CACHE.clear()
+    from src.advisor.engine import _LOOKAHEAD_CACHE
+
+    _LOOKAHEAD_CACHE.clear()
 
 
 def get_sideboard(pool, deck_stacked):

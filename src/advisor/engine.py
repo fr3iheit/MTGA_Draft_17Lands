@@ -14,6 +14,12 @@ from src.advisor.schema import Recommendation
 from src import constants
 from src.card_utils import get_functional_cmc
 from src.advisor.deck_scorer import SHRINKAGE_K
+
+# (pool_signature, card_name) -> improvement bonus for the pack-3 lookahead:
+# the same pool + candidate card recurs every UI refresh, and the heuristic
+# path must stay synchronous (no Monte Carlo here). Cleared with the deck
+# caches between tests and on dataset switches.
+_LOOKAHEAD_CACHE = {}
 from src.advisor.mana_base import count_fixing
 from src.utils import normalize_color_string
 
@@ -277,13 +283,27 @@ class DraftAdvisor:
                 deck_improvement_bonus = 0.0
                 if pack_number >= 3 and self._raw_card_count >= 23:
                     try:
-                        test_pool = self.pool + [card]
-                        new_score = self._get_fast_best_deck_score(
-                            test_pool, self.color_options, pool_size=len(self.pool)
+                        cache_key = (
+                            "|".join(
+                                sorted(
+                                    f"{c.get('name', '')}:{c.get('count', 1)}"
+                                    for c in self.pool
+                                )
+                            ),
+                            name,
                         )
-                        improvement = new_score - self.base_deck_score
-                        if improvement > 0.1:
-                            deck_improvement_bonus = improvement * 3.0
+                        if cache_key in _LOOKAHEAD_CACHE:
+                            deck_improvement_bonus = _LOOKAHEAD_CACHE[cache_key]
+                        else:
+                            test_pool = self.pool + [card]
+                            new_score = self._get_fast_best_deck_score(
+                                test_pool, self.color_options, pool_size=len(self.pool)
+                            )
+                            improvement = new_score - self.base_deck_score
+                            if improvement > 0.1:
+                                deck_improvement_bonus = improvement * 3.0
+                            _LOOKAHEAD_CACHE[cache_key] = deck_improvement_bonus
+                        if deck_improvement_bonus > 0:
                             reasons.append(
                                 f"Improves Best Deck (+{deck_improvement_bonus:.1f})"
                             )
