@@ -623,3 +623,89 @@ def test_internal_builder_error_raises_instead_of_empty_dict(
             suggest_deck(
                 sample_pool, mock_metrics, Configuration(), event_type="PremierDraft"
             )
+
+
+# --- Cycle 2 item 2b: one rescaled MC objective, deterministic seeds ---
+
+
+def test_hinge_cliffs_replaced_by_continuous_mana_term(mock_metrics, sample_pool):
+    """A deck with color_screw_t3 = 11 used to eat a cliff penalty; the mana
+    term now prices it continuously (breakdown carries 'Mana (+x)', never
+    'Color Screw')."""
+    from unittest.mock import patch
+
+    from src.card_logic import suggest_deck
+    from src.configuration import Configuration
+    from src.advisor import deck_builder
+
+    fake_stats = {
+        "mulligans": 5.0, "screw_t3": 10.0, "screw_t4": 10.0, "flood_t5": 10.0,
+        "cast_t2": 80.0, "cast_t3": 70.0, "cast_t4": 60.0, "curve_out": 50.0,
+        "removal_t4": 0.0, "color_screw_t3": 11.0, "avg_hand_size": 6.8,
+    }
+    with patch.object(deck_builder, "simulate_deck", return_value=fake_stats):
+        variants = suggest_deck(
+            sample_pool, mock_metrics, Configuration(), event_type="PremierDraft"
+        )
+    assert variants
+    joined = " | ".join(str(vd.get("breakdown", "")) for vd in variants.values())
+    assert "Color Screw" not in joined
+    assert "Mana (+" in joined
+
+
+def test_suggest_deck_is_deterministic_run_to_run(mock_metrics, sample_pool):
+    """Per-deck CRC32 seeds make the suggester's MC term reproducible across
+    runs (cache cleared between the two invocations)."""
+    from src.card_logic import suggest_deck
+    from src.configuration import Configuration
+    from src.advisor import deck_builder
+
+    deck_builder.GLOBAL_DECK_CACHE.clear()
+    first = suggest_deck(
+        sample_pool, mock_metrics, Configuration(), event_type="PremierDraft"
+    )
+    deck_builder.GLOBAL_DECK_CACHE.clear()
+    second = suggest_deck(
+        sample_pool, mock_metrics, Configuration(), event_type="PremierDraft"
+    )
+    ratings_a = {k: round(v["rating"], 6) for k, v in first.items()}
+    ratings_b = {k: round(v["rating"], 6) for k, v in second.items()}
+    assert ratings_a == ratings_b
+
+
+def test_mc_anchor_card_quality_dominates(mock_metrics):
+    """The rescaled mana term cannot outweigh a >=1-sigma difference in
+    average card quality: two otherwise identical pools whose spells differ
+    by +4.0 WR (~1 sigma) must rank ~12 holistic points apart, far beyond the
+    mana term's realistic swing (<= ~6)."""
+    from src.card_logic import suggest_deck
+    from src.configuration import Configuration
+
+    def pool(gihwr):
+        cards = []
+        for i in range(24):
+            cards.append(
+                {
+                    "name": f"WB Anchor {i}",
+                    "colors": ["W", "B"],
+                    "types": ["Creature"],
+                    "cmc": 3,
+                    "mana_cost": "{1}{W}{B}",
+                    "deck_colors": {"All Decks": {"gihwr": gihwr}},
+                }
+            )
+        cards += [
+            {"name": f"Dual WB {i}", "colors": ["W", "B"], "types": ["Land"],
+             "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+            for i in range(4)
+        ]
+        return cards
+
+    from src.advisor import deck_builder
+
+    hi = suggest_deck(pool(58.0), mock_metrics, Configuration(), event_type="PremierDraft")
+    deck_builder.GLOBAL_DECK_CACHE.clear()  # pool_sig is name-based: bypass it
+    lo = suggest_deck(pool(54.0), mock_metrics, Configuration(), event_type="PremierDraft")
+    best_hi = max(v["rating"] for v in hi.values())
+    best_lo = max(v["rating"] for v in lo.values())
+    assert best_hi > best_lo + 6.0

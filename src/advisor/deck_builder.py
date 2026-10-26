@@ -446,6 +446,36 @@ def _diversity_filter(final_list, best_safe=None):
     return filtered_list
 
 
+MC_FITNESS_WEIGHT = 0.15
+# Rescaled so the mana term cannot outweigh a >=1-sigma difference in average
+# card quality (~12 holistic points): the realistic fitness spread between a
+# deck's mana configurations is ~40 points -> <= 6 score points. Anchored by
+# test_mc_anchor_card_quality_dominates.
+
+
+def _mana_fitness(stats):
+    """One MC objective (adopted from the manual optimizer's cast/curve
+    fitness, mana_base.brute_force_mana_base's scoring): early exact-drop
+    castability and curve, penalized by mulligans, screw and color screw."""
+    return (
+        stats["cast_t2"]
+        + stats["cast_t3"]
+        + stats["cast_t4"]
+        + stats["curve_out"] * 2.0
+        - stats["mulligans"] * 1.5
+        - stats["screw_t3"] * 1.5
+        - stats["color_screw_t3"] * 3.0
+    )
+
+
+def _deck_seed(deck_sig):
+    """Stable per-deck seed (CRC32 of the signature): suggest_deck's MC term
+    is reproducible run to run, a precondition for the CRN objective."""
+    import zlib
+
+    return zlib.crc32(deck_sig.encode("utf-8")) % (2 ** 31)
+
+
 def suggest_deck(
     taken_cards,
     metrics,
@@ -534,33 +564,24 @@ def suggest_deck(
             if deck_sig in simulated_cache:
                 opt_stats, score, breakdown = simulated_cache[deck_sig]
             else:
-                opt_stats = simulate_deck(opt_deck, iterations=10000)
+                opt_stats = simulate_deck(
+                    opt_deck, iterations=10000, seed=_deck_seed(deck_sig)
+                )
                 score, breakdown = calculate_holistic_score(
                     opt_deck, identity_colors, pool_size, metrics
                 )
 
                 if opt_stats:
-                    mc_penalties = []
-                    if opt_stats["color_screw_t3"] > 10.0:
-                        pen = (opt_stats["color_screw_t3"] - 10.0) * 2.5
-                        score -= pen
-                        mc_penalties.append(f"Color Screw (-{pen:.1f})")
-                    if opt_stats["screw_t3"] > 22.0:
-                        pen = (opt_stats["screw_t3"] - 22.0) * 1.5
-                        score -= pen
-                        mc_penalties.append(f"Mana Screw (-{pen:.1f})")
-                    if opt_stats["flood_t5"] > 27.0:
-                        pen = (opt_stats["flood_t5"] - 27.0) * 1.5
-                        score -= pen
-                        mc_penalties.append(f"Flood Risk (-{pen:.1f})")
-
+                    # One MC objective, rescaled (see MC_FITNESS_WEIGHT): the
+                    # three hinge penalties are gone; the mana term rewards
+                    # castable curves and punishes screw continuously instead
+                    # of at three cliff thresholds.
+                    mc = MC_FITNESS_WEIGHT * _mana_fitness(opt_stats)
+                    score += mc
                     score = max(0.0, score)
-                    if mc_penalties:
-                        breakdown = (
-                            f"{breakdown} | {', '.join(mc_penalties)}"
-                            if breakdown
-                            else ", ".join(mc_penalties)
-                        )
+                    breakdown = (
+                        f"{breakdown} | Mana (+{mc:.1f})" if breakdown else f"Mana (+{mc:.1f})"
+                    )
                 simulated_cache[deck_sig] = (opt_stats, score, breakdown)
 
             sig = tuple(
