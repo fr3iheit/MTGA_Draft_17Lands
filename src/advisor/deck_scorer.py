@@ -193,11 +193,26 @@ def identify_top_pairs(pool, metrics, tier_data=None):
         for c in constants.CARD_COLORS
     }
 
-    sorted_c = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    if sorted_c[0][1] <= 0.0:
-        return []
-
-    top_4_colors = [c[0] for c in sorted_c[:4]]
+    # A lane needs bodies: an average over a handful of golds is noise, and
+    # ranking by it let two-card lanes displace a 24-playable lane entirely.
+    # Colors below the floor cannot enter the top-4; if fewer than two real
+    # lanes exist yet, depth (raw sums) decides.
+    min_lane_playables = 6
+    qualifying = [
+        c for c in constants.CARD_COLORS if eligible[c] >= min_lane_playables
+    ]
+    if len(qualifying) >= 2:
+        ranked = sorted(
+            ((c, scores[c]) for c in qualifying), key=lambda x: x[1], reverse=True
+        )
+        if ranked[0][1] <= 0.0:
+            return []
+        top_4_colors = [c for c, _ in ranked[:4]]
+    else:
+        sorted_c = sorted(raw_scores.items(), key=lambda x: x[1], reverse=True)
+        if sorted_c[0][1] <= 0.0:
+            return []
+        top_4_colors = [c[0] for c in sorted_c[:4]]
     from itertools import combinations
 
     return [list(pair) for pair in combinations(top_4_colors, 2)]

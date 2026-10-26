@@ -494,3 +494,27 @@ def test_few_bombs_outrank_deep_mediocre_in_pair_selection():
     ]
     pairs = identify_top_pairs(deep_mediocre + short_bombs, _flat_metrics(54.0, 4.0))
     assert pairs and "U" in pairs[0]
+
+
+def test_two_card_gold_lanes_cannot_displace_real_lanes():
+    """A 5-color-gold pool must keep its deep B/R lanes in the top-4: an
+    average over two eligible golds is noise, not a lane (24-playable B and
+    9-playable R vs 2-5 eligible gold-only lanes)."""
+    from src.advisor.deck_scorer import identify_top_pairs
+
+    pool = (
+        [
+            {"name": f"BR Core {i}", "colors": ["B", "R"], "types": ["Creature"],
+             "cmc": 3, "deck_colors": {"All Decks": {"gihwr": 55.5}}}
+            for i in range(24)
+        ]
+        + [
+            {"name": f"Gold {i}", "colors": ["W", "U", "B", "R", "G"],
+             "types": ["Creature"], "cmc": 4,
+             "deck_colors": {"All Decks": {"gihwr": 58.0}}}
+            for i in range(5)
+        ]
+    )
+    pairs = identify_top_pairs(pool, _flat_metrics(54.0, 4.0))
+    assert pairs, "a real two-lane pool must produce pairs"
+    assert all(set(p) & {"B", "R"} for p in pairs)
