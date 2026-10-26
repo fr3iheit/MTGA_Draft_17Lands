@@ -615,6 +615,63 @@ def search_neighbors(deck_cards, pool, identity_colors):
                 )
 
 
+def _class_probe(seed_deck, pool, identity_colors, target_spells):
+    """One legal spell-count configuration (22 or 24 spells) derived from the
+    seed: drop the pool-cheapest spell (or add the best castable sideboard
+    card) with the land split re-derived. Purely exploratory — honest score."""
+    spells = [c for c in seed_deck if "Land" not in c.get("types", [])]
+    nonbasics = [
+        c for c in seed_deck
+        if "Land" in c.get("types", []) and not _is_basic_land(c)
+    ]
+    n_spells = sum(c.get("count", 1) for c in spells)
+    n_nonbasics = sum(c.get("count", 1) for c in nonbasics)
+    lands = 40 - n_spells - n_nonbasics
+
+    if target_spells == n_spells - 1 and spells:
+        weakest = spells[0]
+        for s in spells:
+            if get_card_rating(s, identity_colors) < get_card_rating(
+                weakest, identity_colors
+            ):
+                weakest = s
+        dropped = []
+        removed = False
+        for c in spells:
+            if not removed and c.get("name") == weakest.get("name"):
+                if c.get("count", 1) > 1:
+                    nc = dict(c)
+                    nc["count"] -= 1
+                    dropped.append(nc)
+                removed = True
+            else:
+                dropped.append(c)
+        if not removed:
+            return None
+        return _with_land_split(dropped, nonbasics, identity_colors, lands + 1)
+
+    if target_spells == n_spells + 1:
+        owned = _owned_counts(pool)
+        in_deck = _owned_counts(seed_deck)
+        candidates = [
+            c
+            for c in pool
+            if "Land" not in c.get("types", [])
+            and is_castable(c, identity_colors, strict=True)
+            and in_deck.get(c.get("name", ""), 0) < owned.get(c.get("name", ""), 0)
+        ]
+        if not candidates:
+            return None
+        best_add = max(candidates, key=lambda c: get_card_rating(c, identity_colors))
+        added = dict(best_add)
+        added["count"] = 1
+        return _with_land_split(
+            spells + [added], nonbasics, identity_colors, lands - 1
+        )
+
+    return None
+
+
 def _search_score(deck_cards, pool_size, metrics):
     """The cycle-2 objective under the candidate's own deterministic seed:
     holistic(identity) + rescaled mana fitness."""
@@ -686,7 +743,10 @@ def hill_climb_search(
                 evals += 1
                 if cand_score > inc_score:
                     eps = _paired_epsilon(incumbent, cand)
-                    if cand_score - inc_score > eps:
+                    # A minimum margin beyond the noise estimate: lateral
+                    # one-card swaps that clear the noise but carry no real
+                    # objective gain churn the deck without improving it.
+                    if cand_score - inc_score > max(eps, 1.5):
                         incumbent = cand
                         inc_score = cand_score
                         accepted = True
@@ -1052,6 +1112,39 @@ def suggest_deck(
                     label_prefix=f"Searched {data.get('label_prefix', '')}",
                 )
                 final_list.insert(0, (f"🔎 {label}", searched))
+
+            # Class probes: a spell-count configuration the builders no longer
+            # emit is still a legal option worth showing — honest rating, the
+            # seed stays the anchor. Built from the top seed only.
+            present_classes = {
+                sum(
+                    c.get("count", 1)
+                    for c in data["deck_cards"]
+                    if "Land" not in c.get("types", [])
+                )
+                for _, data in final_list
+            }
+            top_seed = final_list[0][1]["deck_cards"] if final_list else None
+            if top_seed is not None:
+                top_identity = deck_color_identity(top_seed)
+                for target in (22, 24):
+                    if target in present_classes:
+                        continue
+                    probe = _class_probe(top_seed, taken_cards, top_identity, target)
+                    if probe is None or not candidate_is_legal(probe, taken_cards):
+                        continue
+                    p_score, p_stats, p_identity = _search_score(
+                        probe, pool_size, metrics
+                    )
+                    probed = dict(final_list[0][1])
+                    probed.update(
+                        deck_cards=probe,
+                        rating=p_score,
+                        stats=p_stats,
+                        identity_colors=p_identity,
+                        label_prefix=f"{target}-Spell Probe",
+                    )
+                    final_list.append((f"⚖ {target} Spells", probed))
         except Exception as e:
             logger.warning(f"Deck search error: {e}")
 
