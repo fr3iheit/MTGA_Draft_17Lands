@@ -75,6 +75,7 @@ def select_safe_deck_index(final_list):
 
 def clear_deck_cache():
     GLOBAL_DECK_CACHE.clear()
+    _MC_CACHE.clear()
     from src.advisor.engine import _LOOKAHEAD_CACHE
 
     _LOOKAHEAD_CACHE.clear()
@@ -343,7 +344,7 @@ def optimize_deck(base_deck, base_sb, archetype_key, colors):
     best_perm = permutations[0]
 
     for desc, p_deck, p_sb in permutations:
-        stats = simulate_deck(p_deck, iterations=500, seed=round_seed)
+        stats = _mc_simulation(p_deck, 500, round_seed)
         if not stats:
             continue
         score = _mana_fitness(stats)
@@ -352,7 +353,7 @@ def optimize_deck(base_deck, base_sb, archetype_key, colors):
             best_perm = (desc, p_deck, p_sb)
 
     final_deck, final_sb = best_perm[1], best_perm[2]
-    final_stats = simulate_deck(final_deck, iterations=10000, seed=round_seed + 999)
+    final_stats = _mc_simulation(final_deck, 10000, round_seed + 999)
     return final_deck, final_sb, final_stats, f"Optimized: {best_perm[0]}"
 
 
@@ -468,6 +469,42 @@ def _finalist_mana_base(deck_cards, pool, identity_colors, metrics):
     if not basics:
         return deck_cards
     return spells + nonbasics + basics
+
+
+# Monte-Carlo results keyed by the kernel's own per-card mana profiles (the
+# exact arrays _parse_deck_to_arrays produces) plus trial identity: two decks
+# whose lands, costs, pips, ramp/removal flags and produced-mana masks match
+# produce identical simulations, so spell swaps that preserve the mana profile
+# reuse the simulation instead of paying for it. Cleared with the deck caches.
+_MC_CACHE = {}
+
+
+def _mc_simulation(deck_cards, iterations, seed):
+    from src.advisor.simulator import _parse_deck_to_arrays, simulate_deck
+
+    arrays = _parse_deck_to_arrays(deck_cards)
+    if arrays is None:
+        return simulate_deck(deck_cards, iterations=iterations, seed=seed)
+    profiles = sorted(
+        (
+            bool(arrays.is_land[i]),
+            bool(arrays.is_ramp[i]),
+            bool(arrays.is_removal[i]),
+            int(arrays.costs[i]),
+            int(arrays.mana_produced[i]),
+            tuple(int(v) for v in arrays.pips[i]),
+            int(arrays.pip_count[i]),
+            int(arrays.generic[i]),
+        )
+        for i in range(len(arrays.costs))
+    )
+    key = (tuple(profiles), iterations, seed)
+    if key in _MC_CACHE:
+        return _MC_CACHE[key]
+    stats = simulate_deck(deck_cards, iterations=iterations, seed=seed)
+    if len(_MC_CACHE) < 4096:
+        _MC_CACHE[key] = stats
+    return stats
 
 
 def _deck_seed(deck_sig):
@@ -714,7 +751,7 @@ def _search_score(deck_cards, pool_size, metrics):
     holistic(identity) + rescaled mana fitness."""
     identity = deck_color_identity(deck_cards)
     sig = "|".join(sorted(f"{c.get('name', '')}:{c.get('count', 1)}" for c in deck_cards))
-    stats = simulate_deck(deck_cards, iterations=500, seed=_deck_seed(sig))
+    stats = _mc_simulation(deck_cards, 500, _deck_seed(sig))
     score, _ = calculate_holistic_score(deck_cards, identity, pool_size, metrics)
     if stats:
         score += MC_FITNESS_WEIGHT * _mana_fitness(stats)
@@ -729,13 +766,93 @@ def _paired_epsilon(incumbent, challenger, k=3, trials=300):
 
     diffs = []
     for i in range(k):
-        a = simulate_deck(incumbent, iterations=trials, seed=97000 + i)
-        b = simulate_deck(challenger, iterations=trials, seed=97000 + i)
+        a = _mc_simulation(incumbent, trials, 97000 + i)
+        b = _mc_simulation(challenger, trials, 97000 + i)
         if a and b:
             diffs.append(_mana_fitness(b) - _mana_fitness(a))
     if len(diffs) < 2:
         return 0.0
     return statistics.pstdev(diffs) * MC_FITNESS_WEIGHT * 0.5
+
+
+def _canonical_key(deck_cards):
+    return tuple(sorted((c.get("name", ""), c.get("count", 1)) for c in deck_cards))
+
+
+def beam_search(
+    seed_decks,
+    pool,
+    pool_size,
+    metrics,
+    width=8,
+    max_evals=400,
+    progress_callback=None,
+):
+    """Deterministic beam search over legal 40-card configurations.
+
+    Seeded from the surviving variants; children come from the same coupled,
+    count-aware move generator the hill-climb uses; every beam member must be
+    legal, and a member is only kept over its seed when the acceptance guards
+    (noise margin, quality-or-role-needs) pass. Deterministic by construction:
+    fixed expansion order, canonical dedupe, ties broken by the canonical key.
+    Returns one best deck per seed (never worse than the seed itself).
+    """
+    def guarded(incumbent, cand, cand_score, inc_score):
+        if cand_score - inc_score <= max(_paired_epsilon(incumbent, cand), 1.5):
+            return False
+        cand_identity = deck_color_identity(cand)
+        inc_identity = deck_color_identity(incumbent)
+        if _deck_avg_wr(cand, cand_identity, metrics) >= _deck_avg_wr(
+            incumbent, inc_identity, metrics
+        ) - 1e-9:
+            return True
+        inc_c, inc_e, needs = _deck_role_state(incumbent, pool)
+        cand_c, cand_e, _ = _deck_role_state(cand, pool)
+        return (needs[0] > 0 and cand_c > inc_c) or (needs[1] > 0 and cand_e > inc_e)
+
+    results = []
+    evals = 0
+    for seed_deck in seed_decks:
+        seed_score, _, _ = _search_score(seed_deck, pool_size, metrics)
+        evals += 1
+        best_deck, best_score = seed_deck, seed_score
+
+        beam = [(seed_score, _canonical_key(seed_deck), seed_deck)]
+        seen = {_canonical_key(seed_deck)}
+        improved = True
+        while improved and evals < max_evals:
+            improved = False
+            candidates = []
+            for score, _key, deck in beam:
+                for cand in search_neighbors(deck, pool, deck_color_identity(deck)):
+                    if evals >= max_evals:
+                        break
+                    ck = _canonical_key(cand)
+                    if ck in seen or not candidate_is_legal(cand, pool):
+                        continue
+                    cand_score, _, _ = _search_score(cand, pool_size, metrics)
+                    evals += 1
+                    seen.add(ck)
+                    candidates.append((cand_score, ck, cand, deck, score))
+                if evals >= max_evals:
+                    break
+            if not candidates:
+                break
+            candidates.sort(key=lambda t: (-t[0], t[1]))
+            new_beam = []
+            for cand_score, ck, cand, parent, parent_score in candidates:
+                if len(new_beam) >= width:
+                    break
+                new_beam.append((cand_score, ck, cand))
+            beam = new_beam
+            top_score, _top_key, top_deck = beam[0]
+            if top_score > best_score and guarded(best_deck, top_deck, top_score, best_score):
+                best_deck, best_score = top_deck, top_score
+                improved = True
+            if progress_callback and evals % 40 == 0:
+                progress_callback({"status": f"Beam search... ({evals} candidates)"})
+        results.append((best_deck, best_score))
+    return results
 
 
 def hill_climb_search(
@@ -1150,6 +1267,22 @@ def suggest_deck(
                 metrics,
                 progress_callback=progress_callback,
             )
+            # Beam search over the same seeds with the same guards; a seed's
+            # result is whichever of hill-climb/beam found the better
+            # configuration (each is never worse than the seed on its own).
+            beam_results = beam_search(
+                search_seeds,
+                taken_cards,
+                pool_size,
+                metrics,
+                progress_callback=progress_callback,
+            )
+            results = [
+                beam_best if beam_score > climb_score else climb_best
+                for (climb_best, climb_score), (beam_best, beam_score) in zip(
+                    results, beam_results
+                )
+            ]
             for (label, data), (best, best_score) in zip(final_list[:3], results):
                 if best is data["deck_cards"]:
                     continue

@@ -71,7 +71,7 @@ def mock_simulator_results(deck, iterations, seed=None):
     }
 
 
-@patch("src.advisor.deck_builder.simulate_deck", side_effect=mock_simulator_results)
+@patch("src.advisor.simulator.simulate_deck", side_effect=mock_simulator_results)
 def test_optimize_deck_swaps_clunky_card_for_cheap_premium(mock_sim, base_deck_and_sb):
     """
     Verifies that the optimizer builds the permutations, simulates them,
@@ -160,7 +160,10 @@ def test_optimize_deck_permutation_generation(base_deck_and_sb):
             "avg_hand_size": 6.8,
         }
 
-    with patch("src.advisor.deck_builder.simulate_deck", side_effect=mock_sim):
+    import src.advisor.deck_builder as _db
+
+    _db._MC_CACHE.clear()
+    with patch("src.advisor.simulator.simulate_deck", side_effect=mock_sim):
         optimize_deck(base_deck, base_sb, "G", ["G"])
 
     # Verify that the logic branched into creating the specific permutations
@@ -179,15 +182,18 @@ def test_optimize_deck_runs_seeded_simulations(base_deck_and_sb):
 
     import src.advisor.deck_builder as db
 
+    import src.advisor.simulator as sim
+
     seen_seeds = []
-    real = db.simulate_deck
+    real = sim.simulate_deck
 
     def spy(deck, iterations=10000, seed=None):
         seen_seeds.append((iterations, seed))
         return real(deck, iterations=iterations, seed=seed)
 
+    db._MC_CACHE.clear()
     deck, sb = base_deck_and_sb
-    with patch.object(db, "simulate_deck", side_effect=spy):
+    with patch.object(sim, "simulate_deck", side_effect=spy):
         db.optimize_deck(deck, sb, "UB", ["U", "B"])
     assert seen_seeds and all(s is not None for _, s in seen_seeds)
     assert all(s == seen_seeds[0][1] for _, s in seen_seeds[:-1])  # shared round seed

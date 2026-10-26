@@ -150,3 +150,60 @@ def test_search_idempotent_on_its_own_output():
     best, best_score = results[0]
     again = hill_climb_search([best], pool, 45, _metrics(), max_evals=4000)
     assert again[0][1] <= best_score + 1e-9
+
+
+# --- Step 4 (ADR): MC cache + beam search ---
+
+
+def test_mc_cache_reuses_mana_identical_decks():
+    """Two decks differing only in spell NAME (same cost/pips/flags) hit the
+    same kernel profiles: the second simulation is served from cache."""
+    from unittest.mock import patch
+
+    import src.advisor.deck_builder as db
+
+    def spell(name, colors=("U",), cmc=3):
+        cost = "{" + "}{".join(colors * max(1, cmc - 1)) + "}"
+        return {"name": name, "types": ["Creature"], "colors": list(colors),
+                "cmc": cmc, "mana_cost": cost, "count": 1,
+                "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+
+    base = [spell(f"A{i}") for i in range(23)] + [
+        {"name": "Island", "types": ["Land", "Basic"], "colors": [], "count": 17}
+    ]
+    renamed = [spell(f"B{i}") for i in range(23)] + [
+        {"name": "Island", "types": ["Land", "Basic"], "colors": [], "count": 17}
+    ]
+    import src.advisor.simulator as sim
+
+    db._MC_CACHE.clear()
+    calls = []
+    real = sim.simulate_deck
+    with patch.object(sim, "simulate_deck", side_effect=lambda *a, **k: (calls.append(1), real(*a, **k))[1]):
+        s1 = db._mc_simulation(base, 300, 42)
+        s2 = db._mc_simulation(renamed, 300, 42)
+    assert s1 == s2
+    assert len(calls) == 1
+
+
+def test_beam_search_deterministic_and_legal():
+    from src.advisor.deck_builder import beam_search, candidate_is_legal
+
+    pool, deck = _role_deficient_setup()
+    a = beam_search([deck], pool, 45, _metrics(), width=6, max_evals=200)
+    b = beam_search([deck], pool, 45, _metrics(), width=6, max_evals=200)
+    ka = tuple(sorted(f"{c.get('name')}:{c.get('count', 1)}" for c in a[0][0]))
+    kb = tuple(sorted(f"{c.get('name')}:{c.get('count', 1)}" for c in b[0][0]))
+    assert ka == kb and a[0][1] == b[0][1]
+    assert candidate_is_legal(a[0][0], pool)
+    seed_score, _, _ = _search_score(deck, 45, _metrics())
+    assert a[0][1] >= seed_score - 1e-9
+
+
+def test_beam_beats_or_matches_hill_climb_on_role_deficient():
+    from src.advisor.deck_builder import beam_search, hill_climb_search
+
+    pool, deck = _role_deficient_setup()
+    climb = hill_climb_search([deck], pool, 45, _metrics(), max_evals=200)
+    beam = beam_search([deck], pool, 45, _metrics(), width=8, max_evals=300)
+    assert beam[0][1] >= climb[0][1] - 1e-9
