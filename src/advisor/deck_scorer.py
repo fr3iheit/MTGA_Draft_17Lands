@@ -166,7 +166,8 @@ def identify_top_pairs(pool, metrics, tier_data=None):
         global_std = 4.0
 
     playable_baseline = global_mean - (global_std * 0.5)
-    scores = {c: 0.0 for c in constants.CARD_COLORS}
+    raw_scores = {c: 0.0 for c in constants.CARD_COLORS}
+    eligible = {c: 0 for c in constants.CARD_COLORS}
 
     for card in pool:
         colors = card.get(constants.DATA_FIELD_COLORS, [])
@@ -180,7 +181,17 @@ def identify_top_pairs(pool, metrics, tier_data=None):
         if raw_wr > playable_baseline:
             points = (wr - playable_baseline) / global_std
             for c in colors:
-                scores[c] += points
+                # Multicolor cards credit every color they can be played in,
+                # but the per-color AVERAGE (not the sum) ranks the lane, so a
+                # deep run of mediocre playables cannot drown a short lane of
+                # bombs — which six pairs become variants depends on this.
+                raw_scores[c] += points
+                eligible[c] += 1
+
+    scores = {
+        c: (raw_scores[c] / eligible[c]) if eligible[c] else 0.0
+        for c in constants.CARD_COLORS
+    }
 
     sorted_c = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     if sorted_c[0][1] <= 0.0:

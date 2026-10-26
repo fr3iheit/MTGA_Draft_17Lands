@@ -472,3 +472,25 @@ def test_two_color_context_is_unchanged():
                                   "UB": {"gihwr": 60.0}},
     }
     assert get_card_rating(card, ["B", "U"], _flat_metrics()) == pytest.approx(58.2)
+
+
+# --- Cycle 2 item 5: color scores are per-color averages ---
+
+
+def test_few_bombs_outrank_deep_mediocre_in_pair_selection():
+    """A deep lane of mediocre playables must not drown a short lane of
+    bombs: color strength is the per-color average, not the raw count sum."""
+    from src.advisor.deck_scorer import identify_top_pairs
+
+    deep_mediocre = [
+        {"name": f"Deep B {i}", "colors": ["B"], "types": ["Creature"], "cmc": 3,
+         "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+        for i in range(16)
+    ]
+    short_bombs = [
+        {"name": f"Bomb U {i}", "colors": ["U"], "types": ["Creature"], "cmc": 3,
+         "deck_colors": {"All Decks": {"gihwr": 61.0}}}
+        for i in range(6)
+    ]
+    pairs = identify_top_pairs(deep_mediocre + short_bombs, _flat_metrics(54.0, 4.0))
+    assert pairs and "U" in pairs[0]
