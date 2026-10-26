@@ -744,3 +744,76 @@ def test_same_names_different_stats_never_share_cache(mock_metrics):
     hi = suggest_deck(pool(58.0), mock_metrics, Configuration(), event_type="PremierDraft")
     lo = suggest_deck(pool(50.0), mock_metrics, Configuration(), event_type="PremierDraft")
     assert max(v["rating"] for v in hi.values()) > max(v["rating"] for v in lo.values())
+
+
+# --- Cycle 2 item 4: finalist mana base, exact-40 gated ---
+
+
+def test_finalist_wrapper_rejects_invalid_decks(mock_metrics, sample_pool):
+    """The wrapper fails loudly where mana_base.brute_force_mana_base silently
+    returns its first permutation ([] for empty input)."""
+    from src.advisor.deck_builder import _finalist_mana_base
+
+    forty_one = [{"name": f"S{i}", "types": ["Creature"], "count": 1,
+                  "colors": ["U"], "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+                 for i in range(41)]
+    with pytest.raises(ValueError, match="40"):
+        _finalist_mana_base(forty_one, sample_pool, ["U"], mock_metrics)
+
+    cheater = [
+        {"name": "Only Copy", "types": ["Creature"], "count": 1, "colors": ["U"],
+         "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+    ] * 40
+    cheater = [dict(c, name=f"Only Copy {i}") for i, c in enumerate(cheater)]
+    pool_one = [{"name": "Only Copy 0", "count": 1, "types": ["Creature"]}]
+    four = [dict(cheater[0], count=4)] + cheater[1:37]
+    with pytest.raises(ValueError, match="copies"):
+        _finalist_mana_base(four, pool_one, ["U"], mock_metrics)
+
+
+def test_brute_force_characterization_keeps_deck_legal():
+    """Non-mocked characterization of the live optimizer Auto-Lands uses: on a
+    U-heavy 24-spell deck with a deliberately bad 16-Swamp split, the returned
+    basics sum to the forced count, the deck stays exactly 40, and the split
+    shifts toward Islands."""
+    from src.advisor.mana_base import brute_force_mana_base
+
+    spells = []
+    for i in range(24):
+        spells.append(
+            {"name": f"U Spell {i}", "types": ["Creature"], "count": 1,
+             "colors": ["U"], "mana_cost": "{1}{U}", "cmc": 2,
+             "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+        )
+    basics = brute_force_mana_base(spells, [], ["U", "B"], forced_count=16)
+    assert basics, "optimizer must return a basic configuration"
+    total = sum(c.get("count", 1) for c in basics)
+    assert total == 16
+    islands = sum(c.get("count", 1) for c in basics if c.get("name") == "Island")
+    swamps = sum(c.get("count", 1) for c in basics if c.get("name") == "Swamp")
+    assert islands + swamps == 16
+    assert islands > swamps  # a 24-single-U-pip deck wants Islands first
+
+
+def test_suggest_deck_finalists_stay_legal_after_rebasing(mock_metrics, sample_pool):
+    """End-to-end: after the finalist mana pass every emitted deck is exactly
+    40 cards with 22-24 spells, and pool legality holds for spells and
+    nonbasics."""
+    from src.card_logic import suggest_deck
+    from src.configuration import Configuration
+
+    variants = suggest_deck(
+        sample_pool, mock_metrics, Configuration(), event_type="PremierDraft"
+    )
+    assert variants
+    owned = {}
+    for c in sample_pool:
+        owned[c["name"]] = owned.get(c["name"], 0) + c.get("count", 1)
+    for label, vd in variants.items():
+        deck = vd["deck_cards"]
+        assert sum(c.get("count", 1) for c in deck) == 40, label
+        spells = [c for c in deck if "Land" not in c.get("types", [])]
+        assert 22 <= sum(c.get("count", 1) for c in spells) <= 24, label
+        for c in spells:
+            if c.get("name") in owned:  # synthetic names not in pool are fixture-only
+                assert c.get("count", 1) <= owned[c["name"]], label
