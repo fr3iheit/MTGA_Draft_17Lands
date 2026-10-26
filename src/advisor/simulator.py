@@ -314,7 +314,16 @@ def _run_fast_monte_carlo(
     pip_count,
     generic,
     iterations,
+    seed=-1,
 ):
+    # Common random numbers: a non-negative seed is consumed here, at kernel
+    # entry on the executing worker, seeding numba's per-thread RNG. Every
+    # trial consumes exactly one 40-element shuffle, so two candidates run
+    # under the same seed share the identical stream. seed=-1 keeps the
+    # legacy unseeded behavior.
+    if seed >= 0:
+        np.random.seed(seed)
+
     mulligans = 0
     screw_t3 = 0
     screw_t4 = 0
@@ -447,12 +456,14 @@ def _run_fast_monte_carlo(
     )
 
 
-def simulate_deck(deck_list, iterations=10000):
+def simulate_deck(deck_list, iterations=10000, seed=None):
     arrays = _parse_deck_to_arrays(deck_list)
     if not arrays:
         return None
 
-    results = _run_fast_monte_carlo(*arrays, iterations)
+    results = _run_fast_monte_carlo(
+        *arrays, iterations, -1 if seed is None else int(seed)
+    )
 
     return {
         "mulligans": (results[0] / iterations) * 100.0,
