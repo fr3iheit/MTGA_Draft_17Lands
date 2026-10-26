@@ -709,3 +709,38 @@ def test_mc_anchor_card_quality_dominates(mock_metrics):
     best_hi = max(v["rating"] for v in hi.values())
     best_lo = max(v["rating"] for v in lo.values())
     assert best_hi > best_lo + 6.0
+
+
+# --- Cycle 2 item 2c: cache identity ---
+
+
+def test_same_names_different_stats_never_share_cache(mock_metrics):
+    """Two pools with identical name:count signatures but different win rates
+    must not share variants: the cache key is stats-sensitive."""
+    from src.card_logic import suggest_deck
+    from src.configuration import Configuration
+    from src.advisor import deck_builder
+
+    def pool(gihwr):
+        cards = []
+        for i in range(24):
+            cards.append(
+                {
+                    "name": f"WB Cache {i}",
+                    "colors": ["W", "B"],
+                    "types": ["Creature"],
+                    "cmc": 3,
+                    "mana_cost": "{1}{W}{B}",
+                    "deck_colors": {"All Decks": {"gihwr": gihwr}},
+                }
+            )
+        cards += [
+            {"name": f"Dual WBC {i}", "colors": ["W", "B"], "types": ["Land"],
+             "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+            for i in range(4)
+        ]
+        return cards
+
+    hi = suggest_deck(pool(58.0), mock_metrics, Configuration(), event_type="PremierDraft")
+    lo = suggest_deck(pool(50.0), mock_metrics, Configuration(), event_type="PremierDraft")
+    assert max(v["rating"] for v in hi.values()) > max(v["rating"] for v in lo.values())

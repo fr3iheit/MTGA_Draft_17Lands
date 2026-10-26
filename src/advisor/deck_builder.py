@@ -447,6 +447,7 @@ def _diversity_filter(final_list, best_safe=None):
 
 
 MC_FITNESS_WEIGHT = 0.15
+MC_ITERATIONS = 10000  # trials per candidate simulation (part of cache identity)
 # Rescaled so the mana term cannot outweigh a >=1-sigma difference in average
 # card quality (~12 holistic points): the realistic fitness spread between a
 # deck's mana configurations is ~40 points -> <= 6 score points. Anchored by
@@ -497,7 +498,29 @@ def suggest_deck(
         pool_sig = tuple(
             sorted([f"{c.get('name', '')}:{c.get('count', 1)}" for c in taken_cards])
         )
-        cache_key = (event_type, dataset_name, len(taken_cards), pool_sig)
+        def _stats_sig(cards):
+            parts = []
+            for c in cards:
+                dc = c.get("deck_colors", {})
+                g = dc.get("All Decks", {})
+                parts.append(
+                    "{}:{}/{}".format(
+                        c.get("name", ""),
+                        g.get("gihwr", 0),
+                        g.get("samples", 0),
+                    )
+                )
+            import zlib as _zlib
+
+            return _zlib.crc32(";".join(sorted(parts)).encode("utf-8"))
+
+        cache_key = (
+            event_type,
+            dataset_name,
+            len(taken_cards),
+            pool_sig,
+            _stats_sig(taken_cards),
+        )
 
         if cache_key in GLOBAL_DECK_CACHE:
             if progress_callback:
@@ -561,28 +584,34 @@ def suggest_deck(
                 sorted([f"{c['name']}:{c.get('count', 1)}" for c in opt_deck])
             )
 
-            if deck_sig in simulated_cache:
-                opt_stats, score, breakdown = simulated_cache[deck_sig]
+            # Simulation cache: keyed by the full trial identity (deck
+            # signature, seed, iteration count) and stores ONLY the simulated
+            # stats — the contextual holistic score is recomputed per variant
+            # because it depends on the valuation context.
+            sim_seed = _deck_seed(deck_sig)
+            sim_key = (deck_sig, sim_seed, MC_ITERATIONS)
+            if sim_key in simulated_cache:
+                opt_stats = simulated_cache[sim_key]
             else:
                 opt_stats = simulate_deck(
-                    opt_deck, iterations=10000, seed=_deck_seed(deck_sig)
+                    opt_deck, iterations=MC_ITERATIONS, seed=sim_seed
                 )
-                score, breakdown = calculate_holistic_score(
-                    opt_deck, identity_colors, pool_size, metrics
-                )
+                simulated_cache[sim_key] = opt_stats
 
-                if opt_stats:
-                    # One MC objective, rescaled (see MC_FITNESS_WEIGHT): the
-                    # three hinge penalties are gone; the mana term rewards
-                    # castable curves and punishes screw continuously instead
-                    # of at three cliff thresholds.
-                    mc = MC_FITNESS_WEIGHT * _mana_fitness(opt_stats)
-                    score += mc
-                    score = max(0.0, score)
-                    breakdown = (
-                        f"{breakdown} | Mana (+{mc:.1f})" if breakdown else f"Mana (+{mc:.1f})"
-                    )
-                simulated_cache[deck_sig] = (opt_stats, score, breakdown)
+            score, breakdown = calculate_holistic_score(
+                opt_deck, identity_colors, pool_size, metrics
+            )
+            if opt_stats:
+                # One MC objective, rescaled (see MC_FITNESS_WEIGHT): the
+                # three hinge penalties are gone; the mana term rewards
+                # castable curves and punishes screw continuously instead
+                # of at three cliff thresholds.
+                mc = MC_FITNESS_WEIGHT * _mana_fitness(opt_stats)
+                score += mc
+                score = max(0.0, score)
+                breakdown = (
+                    f"{breakdown} | Mana (+{mc:.1f})" if breakdown else f"Mana (+{mc:.1f})"
+                )
 
             sig = tuple(
                 sorted([f"{c.get('name')}:{c.get('count', 1)}" for c in opt_deck])
