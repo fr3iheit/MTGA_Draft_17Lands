@@ -131,17 +131,18 @@ def calculate_holistic_score(deck, colors, pool_size, metrics, tier_data=None):
     arch_key = normalize_color_string(
         "".join(colors) if len(colors) <= 2 else "".join(colors[:2])
     )
-    valid_ratings = [
-        get_card_rating(c, [arch_key], metrics)
-        for c in spells
-        for _ in range(c.get("count", 1))
-        if get_card_rating(c, [arch_key], metrics) > 0.0
-    ]
+    # Unrated spells (no data of their own in an established set) are charged
+    # at replacement level instead of vanishing from the average: every spell
+    # the deck actually plays belongs in the denominator.
+    replacement_level = global_mean - (global_std * 1.5)
+    ratings = []
+    for c in spells:
+        for _ in range(c.get("count", 1)):
+            rating = get_card_rating(c, [arch_key], metrics)
+            ratings.append(rating if rating > 0.0 else replacement_level)
 
     avg_gihwr = (
-        sum(valid_ratings) / len(valid_ratings)
-        if valid_ratings
-        else global_mean - global_std
+        sum(ratings) / len(ratings) if ratings else global_mean - global_std
     )
     z_score = (avg_gihwr - global_mean) / global_std
     power_level = 75.0 + (z_score * 12.0)

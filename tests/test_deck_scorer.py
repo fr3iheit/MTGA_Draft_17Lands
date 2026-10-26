@@ -315,3 +315,43 @@ def test_denominator_concepts_are_named_not_bare():
         if "expected_spells = int(" in line or "TARGET_SPELL_COUNT" in line and "min(" in line:
             assert "42" not in line.split("#")[0], f"bare 42 in expression: {line}"
             assert "23 *" not in line, f"bare 23 multiplier in expression: {line}"
+
+
+# --- B5: unrated spells are charged, not free ---
+
+
+def _holistic(spells, pool_size=45):
+    from unittest.mock import MagicMock
+
+    from src.card_logic import calculate_holistic_score
+
+    metrics = MagicMock()
+    metrics.get_metrics.return_value = (54.0, 4.0)
+    return calculate_holistic_score(spells, ["U"], pool_size, metrics)[0]
+
+
+def test_unrated_spells_lower_the_deck_average():
+    """The remaining rated spells average above the mean (60.0), so a deck
+    carrying five unrated spells must score below the same deck filled with
+    54% spells: the parent dropped unrated spells from the average entirely."""
+    rated = [
+        {"name": f"Rated {i}", "colors": ["U"], "types": ["Creature"], "cmc": 3,
+         "mana_cost": "{2}{U}", "count": 1,
+         "deck_colors": {"All Decks": {"gihwr": 60.0}}}
+        for i in range(18)
+    ]
+    unrated = [
+        {"name": f"Mystery {i}", "colors": ["U"], "types": ["Creature"], "cmc": 3,
+         "mana_cost": "{2}{U}", "count": 1, "deck_colors": {}}
+        for i in range(5)
+    ]
+    fillers = [
+        {"name": f"Filler {i}", "colors": ["U"], "types": ["Creature"], "cmc": 3,
+         "mana_cost": "{2}{U}", "count": 1,
+         "deck_colors": {"All Decks": {"gihwr": 54.0}}}
+        for i in range(5)
+    ]
+
+    score_unrated = _holistic(rated + unrated)
+    score_fillers = _holistic(rated + fillers)
+    assert score_unrated < score_fillers - 1.0
