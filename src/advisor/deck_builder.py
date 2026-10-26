@@ -478,6 +478,226 @@ def _deck_seed(deck_sig):
     return zlib.crc32(deck_sig.encode("utf-8")) % (2 ** 31)
 
 
+
+# --- Cycle 3: bounded search over the spells (3.1-3.3) ---
+
+SEARCH_CLASS_SPELLS = (22, 23, 24)
+
+
+def _owned_counts(cards):
+    owned = {}
+    for c in cards:
+        owned[c.get("name", "")] = owned.get(c.get("name", ""), 0) + c.get("count", 1)
+    return owned
+
+
+def _is_basic_land(card):
+    return "Land" in card.get("types", []) and (
+        card.get("name") in constants.BASIC_LANDS
+        or "Basic" in card.get("types", [])
+    )
+
+
+def candidate_is_legal(deck_cards, pool):
+    """3.1 legality: exactly 40 cards, 22-24 spells, and no spell or drafted
+    nonbasic beyond the copies the pool owns. Basic lands are exempt — they
+    have no pool entry."""
+    total = sum(c.get("count", 1) for c in deck_cards)
+    if total != 40:
+        return False
+    spell_count = sum(
+        c.get("count", 1) for c in deck_cards if "Land" not in c.get("types", [])
+    )
+    if spell_count not in SEARCH_CLASS_SPELLS:
+        return False
+    owned = _owned_counts(pool)
+    for c in deck_cards:
+        if _is_basic_land(c):
+            continue
+        if c.get("count", 1) > owned.get(c.get("name", ""), 0):
+            return False
+    return True
+
+
+def _with_land_split(spells, nonbasics, identity_colors, forced_count):
+    """3.2: the candidate's lands follow its spell configuration (heuristic
+    split; brute force stays finalist-only)."""
+    basics = calculate_dynamic_mana_base(
+        spells, nonbasics, identity_colors, forced_count=max(0, forced_count)
+    )
+    return spells + nonbasics + basics
+
+
+def search_neighbors(deck_cards, pool, identity_colors):
+    """3.2: coupled, count-aware moves. Every spell replacement is generated
+    together with its re-derived land split; spell-count moves (one more spell
+    with one fewer land, and the reverse) are paired with the land change —
+    never a land-only change that leaves 39 or 41 cards."""
+    spells = [c for c in deck_cards if "Land" not in c.get("types", [])]
+    nonbasics = [
+        c for c in deck_cards if "Land" in c.get("types", []) and not _is_basic_land(c)
+    ]
+    n_spells = sum(c.get("count", 1) for c in spells)
+    n_nonbasics = sum(c.get("count", 1) for c in nonbasics)
+    lands_total = 40 - n_spells - n_nonbasics
+
+    owned = _owned_counts(pool)
+    in_deck = _owned_counts(deck_cards)
+    sideboard = [
+        c
+        for c in pool
+        if "Land" not in c.get("types", [])
+        and is_castable(c, identity_colors, strict=True)
+        and in_deck.get(c.get("name", ""), 0) < owned.get(c.get("name", ""), 0)
+    ]
+
+    def _swap_spell(out_card, in_card):
+        new_spells = []
+        removed = False
+        for c in spells:
+            if not removed and c.get("name") == out_card.get("name"):
+                if c.get("count", 1) > 1:
+                    nc = dict(c)
+                    nc["count"] -= 1
+                    new_spells.append(nc)
+                removed = True
+            else:
+                new_spells.append(c)
+        if not removed:
+            return None
+        added = False
+        for c in new_spells:
+            if c.get("name") == in_card.get("name"):
+                nc = dict(c)
+                nc["count"] += 1
+                new_spells = [
+                    nc if x.get("name") == c.get("name") else x for x in new_spells
+                ]
+                added = True
+                break
+        if not added:
+            ic = dict(in_card)
+            ic["count"] = 1
+            new_spells.append(ic)
+        return new_spells
+
+    for in_card in sideboard:
+        for s in spells:
+            new_spells = _swap_spell(s, in_card)
+            if new_spells:
+                yield _with_land_split(
+                    new_spells, nonbasics, identity_colors, lands_total
+                )
+        if n_spells < 24:
+            ic = dict(in_card)
+            ic["count"] = 1
+            yield _with_land_split(
+                spells + [ic], nonbasics, identity_colors, lands_total - 1
+            )
+    if n_spells > 22:
+        for s in spells:
+            new_spells = _swap_spell(s, None) if False else None
+            # drop one copy of s (count-aware), add one land
+            dropped = []
+            removed = False
+            for c in spells:
+                if not removed and c.get("name") == s.get("name"):
+                    if c.get("count", 1) > 1:
+                        nc = dict(c)
+                        nc["count"] -= 1
+                        dropped.append(nc)
+                    removed = True
+                else:
+                    dropped.append(c)
+            if removed:
+                yield _with_land_split(
+                    dropped, nonbasics, identity_colors, lands_total + 1
+                )
+
+
+def _search_score(deck_cards, pool_size, metrics):
+    """The cycle-2 objective under the candidate's own deterministic seed:
+    holistic(identity) + rescaled mana fitness."""
+    identity = deck_color_identity(deck_cards)
+    sig = "|".join(sorted(f"{c.get('name', '')}:{c.get('count', 1)}" for c in deck_cards))
+    stats = simulate_deck(deck_cards, iterations=500, seed=_deck_seed(sig))
+    score, _ = calculate_holistic_score(deck_cards, identity, pool_size, metrics)
+    if stats:
+        score += MC_FITNESS_WEIGHT * _mana_fitness(stats)
+    return score, stats, identity
+
+
+def _paired_epsilon(incumbent, challenger, k=3, trials=300):
+    """3.3 acceptance margin: the spread of the paired mana-fitness
+    differences under k common seeds, in score points. When the estimate is
+    zero, acceptance still requires a strict improvement."""
+    import statistics
+
+    diffs = []
+    for i in range(k):
+        a = simulate_deck(incumbent, iterations=trials, seed=97000 + i)
+        b = simulate_deck(challenger, iterations=trials, seed=97000 + i)
+        if a and b:
+            diffs.append(_mana_fitness(b) - _mana_fitness(a))
+    if len(diffs) < 2:
+        return 0.0
+    return statistics.pstdev(diffs) * MC_FITNESS_WEIGHT * 0.5
+
+
+def hill_climb_search(
+    seed_decks,
+    pool,
+    pool_size,
+    metrics,
+    max_evals=150,
+    deadline_s=2.5,
+    progress_callback=None,
+):
+    """3.3: hill-climb seeded from each surviving variant. Round-robin under
+    one shared budget (an evaluation-count cap when given — the deterministic
+    test mode — otherwise a wall-clock deadline), CRN seeds per candidate,
+    acceptance requires clearing the paired-noise margin, and every seed
+    always stays a candidate: the search can only add, never replace with
+    something worse. Returns one best deck per seed."""
+    import time
+
+    # Deterministic by default: a fixed evaluation budget per call (same
+    # pool -> same emitted decks); the wall-clock deadline is only a safety
+    # guard for slow machines, not the primary stop.
+    start = time.monotonic()
+    budgets = max_evals
+    evals = 0
+    best_per_seed = []
+    for seed_idx, seed_deck in enumerate(seed_decks):
+        incumbent = seed_deck
+        inc_score, _, _ = _search_score(incumbent, pool_size, metrics)
+        evals += 1
+        exhausted = False
+        while not exhausted:
+            neighbors = list(search_neighbors(incumbent, pool, deck_color_identity(incumbent)))
+            accepted = False
+            for cand in neighbors:
+                if evals >= budgets or (
+                    time.monotonic() - start > deadline_s
+                ):
+                    exhausted = True
+                    break
+                cand_score, _, _ = _search_score(cand, pool_size, metrics)
+                evals += 1
+                if cand_score > inc_score:
+                    eps = _paired_epsilon(incumbent, cand)
+                    if cand_score - inc_score > eps:
+                        incumbent = cand
+                        inc_score = cand_score
+                        accepted = True
+                        break
+            if not accepted:
+                exhausted = True  # neighborhood exhausted (idempotence)
+            if progress_callback and evals % 20 == 0:
+                progress_callback({"status": f"Searching decks... ({evals} candidates)"})
+        best_per_seed.append((incumbent, inc_score))
+    return best_per_seed
+
 def suggest_deck(
     taken_cards,
     metrics,
@@ -799,6 +1019,41 @@ def suggest_deck(
             data["breakdown"] = breakdown_d
             data["stats"] = stats_d or data.get("stats")
             final_list[idx] = (label, data)
+
+        # Cycle 3: bounded search seeded from the surviving variants. The
+        # search can only ADD a strictly better configuration — every seed
+        # stays a candidate — and every emitted candidate is legality-checked
+        # (exact-40, 22-24 spells, pool multiplicity).
+        try:
+            if progress_callback:
+                progress_callback({"status": "Searching for better decks..."})
+            search_seeds = [data["deck_cards"] for _, data in final_list[:3]]
+            results = hill_climb_search(
+                search_seeds,
+                taken_cards,
+                pool_size,
+                metrics,
+                progress_callback=progress_callback,
+            )
+            for (label, data), (best, best_score) in zip(final_list[:3], results):
+                if best is data["deck_cards"]:
+                    continue
+                if best_score <= data["rating"]:
+                    continue
+                if not candidate_is_legal(best, taken_cards):
+                    continue
+                _, stats_s, identity_s = _search_score(best, pool_size, metrics)
+                searched = dict(data)
+                searched.update(
+                    deck_cards=best,
+                    rating=best_score,
+                    stats=stats_s or data.get("stats"),
+                    identity_colors=identity_s,
+                    label_prefix=f"Searched {data.get('label_prefix', '')}",
+                )
+                final_list.insert(0, (f"🔎 {label}", searched))
+        except Exception as e:
+            logger.warning(f"Deck search error: {e}")
 
         for label, data in final_list:
             sorted_decks[label] = data
