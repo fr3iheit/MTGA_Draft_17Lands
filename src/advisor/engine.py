@@ -262,7 +262,7 @@ class DraftAdvisor:
                     try:
                         test_pool = self.pool + [card]
                         new_score = self._get_fast_best_deck_score(
-                            test_pool, self.color_options
+                            test_pool, self.color_options, pool_size=len(self.pool)
                         )
                         improvement = new_score - self.base_deck_score
                         if improvement > 0.1:
@@ -668,8 +668,16 @@ class DraftAdvisor:
             return 0.0
 
     def _get_fast_best_deck_score(
-        self, pool: List[Dict], color_options: List[List[str]]
+        self,
+        pool: List[Dict],
+        color_options: List[List[str]],
+        pool_size: int = None,
     ) -> float:
+        """Best holistic deck score over the variant builders. `pool_size`
+        overrides the pool length fed to the scorer: the pack-3 lookahead
+        passes the baseline's size so the comparison is not contaminated by
+        the expected-spells step penalty (a +1 pool crossing a step shifts
+        the penalty by a constant -10 with no deck change at all)."""
         from src.card_logic import (
             build_variant_consistency,
             build_variant_greedy,
@@ -678,13 +686,14 @@ class DraftAdvisor:
             calculate_holistic_score,
         )
 
+        effective_size = len(pool) if pool_size is None else pool_size
         best_score = 0.0
         for main_colors in color_options:
             for builder in [build_variant_consistency, build_variant_curve]:
                 deck = builder(pool, main_colors, self.metrics)
                 if deck:
                     score, _ = calculate_holistic_score(
-                        deck, main_colors, len(pool), self.metrics
+                        deck, main_colors, effective_size, self.metrics
                     )
                     if score > best_score:
                         best_score = score
@@ -693,7 +702,7 @@ class DraftAdvisor:
             if deck:
                 target_colors = main_colors + [splash] if splash else main_colors
                 score, _ = calculate_holistic_score(
-                    deck, target_colors, len(pool), self.metrics
+                    deck, target_colors, effective_size, self.metrics
                 )
                 if score > best_score:
                     best_score = score
@@ -702,7 +711,7 @@ class DraftAdvisor:
         if deck:
             target_colors = soup_colors[:3] if soup_colors else ["All Decks"]
             score, _ = calculate_holistic_score(
-                deck, target_colors, len(pool), self.metrics
+                deck, target_colors, effective_size, self.metrics
             )
             if score > best_score:
                 best_score = score
