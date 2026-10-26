@@ -1278,7 +1278,8 @@ def suggest_deck(
                 progress_callback=progress_callback,
             )
             results = [
-                beam_best if beam_score > climb_score else climb_best
+                (beam_best, beam_score) if beam_score > climb_score
+                else (climb_best, climb_score)
                 for (climb_best, climb_score), (beam_best, beam_score) in zip(
                     results, beam_results
                 )
