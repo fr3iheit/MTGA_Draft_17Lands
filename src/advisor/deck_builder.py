@@ -453,6 +453,7 @@ def suggest_deck(
     event_type="PremierDraft",
     progress_callback=None,
     dataset_name=None,
+    tier_data=None,
 ):
     sorted_decks = {}
     pool_size = len(taken_cards)
@@ -473,7 +474,7 @@ def suggest_deck(
                 progress_callback({"status": "Loaded optimized decks from cache."})
             return GLOBAL_DECK_CACHE[cache_key]
 
-        color_options = identify_top_pairs(taken_cards, metrics)
+        color_options = identify_top_pairs(taken_cards, metrics, tier_data)
         all_variants, incomplete_variants = [], []
         seen_signatures = set()
         simulated_cache = {}  # Cache to prevent random variance on identical decks

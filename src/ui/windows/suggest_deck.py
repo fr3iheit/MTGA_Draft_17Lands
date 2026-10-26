@@ -897,6 +897,7 @@ class SuggestDeckPanel(ttk.Frame):
         self.incremental_labels = []
 
         dataset_name = self.configuration.card_data.latest_dataset
+        tier_data = self.draft.retrieve_tier_data()
 
         # suggest_deck() and its progress callback run on the sim-executor
         # pool thread. tkinter is not thread-safe: calling Tk from there
@@ -967,6 +968,7 @@ class SuggestDeckPanel(ttk.Frame):
                     event_type,
                     _progress_cb,
                     dataset_name,
+                    tier_data,
                 )
                 progress_q.put({"done": raw_results})
             except Exception as e:

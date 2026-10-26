@@ -443,3 +443,32 @@ def test_low_sample_bad_cards_do_not_flip_pair_selection():
     ]
     pairs = identify_top_pairs(good + noisy_bad, _flat_metrics(54.0, 4.0))
     assert pairs and "U" in pairs[0]  # deep good-U lane outranks the noisy lane
+
+
+# --- Cycle 2 item 1c: pair selection in 3+ color contexts + tier_data ---
+
+
+def test_three_color_context_uses_the_cards_own_best_pair():
+    """A WUB soup pricing its spells: the spell whose UB pair carries the
+    strong rate must be priced under UB, not the positionally-truncated WU."""
+    from src.advisor.deck_scorer import get_card_rating
+
+    card = {
+        "name": "UB Specialist", "colors": ["U", "B"], "types": ["Creature"],
+        "cmc": 3, "deck_colors": {"All Decks": {"gihwr": 54.0},
+                                  "WU": {"gihwr": 52.0}, "UB": {"gihwr": 58.0}},
+    }
+    rating = get_card_rating(card, ["W", "U", "B"], _flat_metrics(54.0, 4.0))
+    # blend of shrunk-free raw values (no samples): 0.7*58 + 0.3*54 = 56.8
+    assert rating == pytest.approx(56.8)
+
+
+def test_two_color_context_is_unchanged():
+    from src.advisor.deck_scorer import get_card_rating
+
+    card = {
+        "name": "Plain Pair", "colors": ["U", "B"], "types": ["Creature"],
+        "cmc": 3, "deck_colors": {"All Decks": {"gihwr": 54.0},
+                                  "UB": {"gihwr": 60.0}},
+    }
+    assert get_card_rating(card, ["B", "U"], _flat_metrics()) == pytest.approx(58.2)

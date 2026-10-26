@@ -32,6 +32,26 @@ def shrunk_wr(raw, prior, n, k=SHRINKAGE_K):
     return prior + (raw - prior) * (n / (n + k))
 
 
+def effective_pair_key(card, colors):
+    """Which pair prices a card in a 3+ color context: the card's own
+    best-WUBRG pair among the deck's colors, not a positional truncation.
+    Falls back to the first two colors when the card carries no pair data."""
+    if len(colors) <= 2:
+        return normalize_color_string("".join(colors))
+    stats = card.get("deck_colors", {})
+    best, best_wr = None, -1.0
+    from itertools import combinations
+
+    for a, b in combinations(sorted(colors), 2):
+        key = normalize_color_string(a + b)
+        wr = float(stats.get(key, {}).get("gihwr") or 0.0)
+        if wr > best_wr:
+            best, best_wr = key, wr
+    if best is None or best_wr <= 0.0:
+        return normalize_color_string("".join(sorted(colors)[:2]))
+    return best
+
+
 def card_wr_posteriors(card, colors, metrics=None):
     """Posterior win-rate estimates for `card` under `colors`, WR scale only —
     callers apply their own transforms. Returns a dict with raw values, the
@@ -40,9 +60,7 @@ def card_wr_posteriors(card, colors, metrics=None):
     where every card therefore keeps today's raw-value behavior)."""
     stats = card.get("deck_colors", {})
     global_wr = float(stats.get("All Decks", {}).get("gihwr") or 0.0)
-    arch_key = normalize_color_string(
-        "".join(colors) if len(colors) <= 2 else "".join(colors[:2])
-    )
+    arch_key = effective_pair_key(card, colors)
     arch_stats = stats.get(arch_key, {}) if arch_key != "All Decks" else {}
     arch_wr = float(arch_stats.get("gihwr") or 0.0) if arch_stats else global_wr
     n = int(arch_stats.get("samples", 0) or 0) if arch_stats else 0
@@ -102,10 +120,9 @@ def get_card_rating(card, colors, metrics=None, tier_data=None):
     stats = card.get("deck_colors", {})
     global_wr = float(stats.get("All Decks", {}).get("gihwr") or 0.0)
 
-    # Dataset deck_colors keys are WUBRG-ordered ("UB", not "BU").
-    arch_key = normalize_color_string(
-        "".join(colors) if len(colors) <= 2 else "".join(colors[:2])
-    )
+    # Dataset deck_colors keys are WUBRG-ordered ("UB", not "BU"); in a 3+
+    # color context the card is priced under its own best pair.
+    arch_key = effective_pair_key(card, colors)
     arch_wr = float(stats.get(arch_key, {}).get("gihwr") or 0.0)
 
     post = card_wr_posteriors(card, colors, metrics)
