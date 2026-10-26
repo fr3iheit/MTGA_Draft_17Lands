@@ -583,3 +583,35 @@ def test_deck_improvement_bonus_not_discounted_by_castability(monkeypatch):
 
     ctx_one, ctx_half = run(1.0), run(0.5)
     assert ctx_half - 0.5 * ctx_one > 0.05
+
+
+# --- Cycle 2 item 1b: reliability on raw-rate bonus paths ---
+
+
+def test_small_sample_bomb_cannot_buy_its_bonus_back():
+    """Two identical bombs differing only in sample count: the ten-game spike
+    loses its raw-rate power bonus (bomb z-score path), the 50k-game one
+    keeps it."""
+    def bomb(samples):
+        return {
+            "name": f"Bomb s{samples}", "colors": ["R"], "types": ["Creature"],
+            "cmc": 4, "mana_cost": "{3}{R}",
+            "deck_colors": {"All Decks": {"gihwr": 63.0, "samples": samples}},
+        }
+
+    pool = [
+        {"name": f"RG {i}", "colors": ["R", "G"], "types": ["Creature"], "cmc": 3,
+         "deck_colors": {"All Decks": {"gihwr": 54.0, "samples": 10 ** 9}}}
+        for i in range(12)
+    ]
+    filler = {
+        "name": "Filler", "colors": ["R"], "types": ["Creature"], "cmc": 2,
+        "mana_cost": "{1}{R}", "deck_colors": {"All Decks": {"gihwr": 54.0}},
+    }
+    pack = [bomb(10), bomb(50000), filler, filler, filler]
+    advisor = DraftAdvisor(
+        _FixMetrics(), pool,
+        draft_progress={"picks": 10, "total_picks": 45, "cards": 9, "total_cards": 45},
+    )
+    recs = {r.card_name: r.contextual_score for r in advisor.evaluate_pack(pack, 1, current_pack=1)}
+    assert recs["Bomb s50000"] > recs["Bomb s10"] + 3.0

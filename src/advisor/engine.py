@@ -13,6 +13,7 @@ from typing import List, Dict, Any, Tuple
 from src.advisor.schema import Recommendation
 from src import constants
 from src.card_utils import get_functional_cmc
+from src.advisor.deck_scorer import SHRINKAGE_K
 from src.advisor.mana_base import count_fixing
 from src.utils import normalize_color_string
 
@@ -169,6 +170,18 @@ class DraftAdvisor:
                 # --- STEP 1: Blended Base Score (With Bayesian Smoothing & Signals) ---
                 base_score = self._calculate_weighted_score(card, progress_picks)
 
+                # Reliability of the card's own record gates every raw-rate
+                # bonus path below (bomb z-score, lateness capitalization): a
+                # small-sample spike must not buy its bonuses back through a
+                # path the shared posterior does not cover. No samples field
+                # (shipped fixtures) keeps full weight.
+                global_samples = int(stats.get("samples", 0) or 0)
+                reliability = (
+                    global_samples / (global_samples + SHRINKAGE_K)
+                    if global_samples > 0
+                    else 1.0
+                )
+
                 # --- STEP 2: Bomb Detection ---
                 z_score = (raw_gihwr - pack_mean) / pack_std
                 iwd_mult = (
@@ -176,13 +189,17 @@ class DraftAdvisor:
                     if (raw_iwd > self.IWD_PREMIUM_THRESHOLD and z_score > 1.0)
                     else 1.0
                 )
-                power_bonus = max(0, z_score * 10 * iwd_mult) if z_score > 0.5 else 0
+                power_bonus = (
+                    max(0, z_score * 10 * iwd_mult) * reliability
+                    if z_score > 0.5
+                    else 0
+                )
 
                 # --- STEP 3: Signal Capitalization ---
                 if pack_number == 1 and safe_pick >= 5 and alsa > 0:
                     lateness = safe_pick - alsa
                     if lateness >= 2.0 and z_score > 0.5:
-                        power_bonus += lateness * z_score * 3.0
+                        power_bonus += lateness * z_score * 3.0 * reliability
                         reasons.append(f"LATE SIGNAL")
 
                 # --- STEP 4: Archetype Synergy & 'Glue Cards' ---
