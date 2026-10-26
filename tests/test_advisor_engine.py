@@ -615,3 +615,67 @@ def test_small_sample_bomb_cannot_buy_its_bonus_back():
     )
     recs = {r.card_name: r.contextual_score for r in advisor.evaluate_pack(pack, 1, current_pack=1)}
     assert recs["Bomb s50000"] > recs["Bomb s10"] + 3.0
+
+
+# --- Cycle 2 item 1d: n=0 state matrix, Day-1 heuristic routing ---
+
+
+def test_day_one_set_routes_through_heuristic_evaluator():
+    """No dataset win rates at all: every card is priced by the same
+    HeuristicEvaluator deck_scorer uses, so a premium removal rare outranks a
+    vanilla common and the score follows the mapped formula exactly."""
+    from unittest.mock import MagicMock
+
+    from src.sealed_logic import HeuristicEvaluator
+
+    metrics = MagicMock()
+    metrics.get_metrics.return_value = (0, 0)  # day-1 set: no data
+    pool = [
+        {"name": f"Any {i}", "colors": ["R"], "types": ["Creature"], "cmc": 3,
+         "deck_colors": {}}
+        for i in range(12)
+    ]
+    advisor = DraftAdvisor(
+        metrics, pool,
+        draft_progress={"picks": 2, "total_picks": 45, "cards": 1, "total_cards": 45},
+    )
+    assert advisor.set_has_data is False
+
+    removal_rare = {
+        "name": "Premium Removal", "colors": ["B"], "types": ["Instant"], "cmc": 2,
+        "rarity": "rare", "tags": ["removal"], "deck_colors": {},
+    }
+    vanilla_common = {
+        "name": "Vanilla", "colors": ["B"], "types": ["Creature"], "cmc": 3,
+        "rarity": "common", "deck_colors": {},
+    }
+    recs = {
+        r.card_name: r
+        for r in advisor.evaluate_pack([removal_rare, vanilla_common], 1, current_pack=1)
+    }
+    h = HeuristicEvaluator.evaluate(removal_rare)
+    expected_base = 50.0 + ((h - 54.0) / 4.0) * 15.0
+    assert advisor._calculate_weighted_score(removal_rare, 1) == pytest.approx(
+        expected_base
+    )
+    assert recs["Premium Removal"].contextual_score > recs["Vanilla"].contextual_score
+
+
+def test_established_set_with_card_without_data_scores_zero():
+    """State 2: the set has data but the card has none of its own — the
+    conservative 0.0 sentinel, never an invented metadata score."""
+    metrics = MagicMock()
+    metrics.get_metrics.return_value = (54.0, 4.0)
+    pool = [
+        {"name": f"RG {i}", "colors": ["R", "G"], "types": ["Creature"], "cmc": 3,
+         "deck_colors": {"All Decks": {"gihwr": 54.0, "samples": 10 ** 9}}}
+        for i in range(12)
+    ]
+    advisor = DraftAdvisor(metrics, pool)
+    card = {
+        "name": "No Data", "colors": ["R", "G"], "types": ["Creature"], "cmc": 3,
+        "rarity": "mythic", "deck_colors": {},
+    }
+    base = advisor._calculate_weighted_score(card, 10)
+    # mapped from a 0.0 WR: 50 + ((0-54)/4)*15 = -152.5, clamped to 0
+    assert base == 0.0

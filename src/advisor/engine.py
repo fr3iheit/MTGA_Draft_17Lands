@@ -57,14 +57,14 @@ class DraftAdvisor:
         )
         self._raw_card_count = self.draft_progress.get("cards", len(self.pool))
 
-        # 1. Base statistical baselines
-        self.global_mean, self.global_std = self.metrics.get_metrics(
-            "All Decks", "gihwr"
-        )
-        if self.global_mean <= 0:
-            self.global_mean = 54.0
-        if self.global_std <= 0:
-            self.global_std = 4.0
+        # 1. Base statistical baselines. set_has_data records whether the
+        # active dataset carries real win rates at all: on a day-1 set every
+        # card routes through HeuristicEvaluator (n=0 state matrix, state 3),
+        # matching deck_scorer.get_card_rating's fallback.
+        raw_mean, raw_std = self.metrics.get_metrics("All Decks", "gihwr")
+        self.set_has_data = bool(raw_mean and raw_mean > 0)
+        self.global_mean = raw_mean if self.set_has_data else 54.0
+        self.global_std = raw_std if (self.set_has_data and raw_std > 0) else 4.0
 
         # 2. Identify established lane
         self.main_colors, self.color_counts = self._identify_main_colors()
@@ -658,6 +658,19 @@ class DraftAdvisor:
 
     def _calculate_weighted_score(self, card: Dict, pick_number: int) -> float:
         try:
+            if not self.set_has_data:
+                # Day 1 before any data exists: pure metadata heuristics on the
+                # same GIHWR-like scale (40-68) — the identical fallback
+                # deck_scorer.get_card_rating uses.
+                from src.sealed_logic import HeuristicEvaluator
+
+                h = HeuristicEvaluator.evaluate(card)
+                return max(
+                    0.0,
+                    50.0
+                    + ((h - self.global_mean) / max(0.1, self.global_std)) * 15.0,
+                )
+
             stats = card.get("deck_colors", {})
             global_wr = float(stats.get("All Decks", {}).get("gihwr", 0.0))
             arch_weight = min(0.9, 0.2 + (pick_number / self._total_picks) * 0.7)
