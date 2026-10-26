@@ -93,90 +93,6 @@ def get_sideboard(pool, deck_stacked):
     return sideboard
 
 
-def brute_force_mana_base(spells, non_basic_lands, colors, forced_count=17):
-    """
-    Finds the absolute optimal mana base by simulating dozens of permutations
-    around the mathematical baseline.
-    """
-    if forced_count <= 0:
-        return []
-
-    # 1. Get the heuristic baseline
-    baseline_basics = calculate_dynamic_mana_base(
-        spells, non_basic_lands, colors, forced_count
-    )
-
-    base_counts = {c: 0 for c in colors}
-    for b in baseline_basics:
-        col = b["colors"][0]
-        if col in base_counts:
-            base_counts[col] += 1
-
-    # 2. Generate Neighborhood Permutations (+/- 2 lands per color)
-    tolerance = 2
-    ranges = []
-
-    # Only test permutations for colors we actually want to cast
-    active_colors = [c for c in colors if base_counts.get(c, 0) > 0]
-    if not active_colors:
-        return baseline_basics
-
-    for c in active_colors:
-        base = base_counts[c]
-        min_val = max(0, base - tolerance)
-        max_val = base + tolerance
-        ranges.append(range(min_val, max_val + 1))
-
-    valid_permutations = []
-    for combo in itertools.product(*ranges):
-        if sum(combo) == forced_count:
-            valid_permutations.append(dict(zip(active_colors, combo)))
-
-    if not valid_permutations:
-        return baseline_basics
-
-    # 3. Simulate all valid permutations
-    best_score = -9999
-    best_perm = valid_permutations[0]
-    base_deck = spells + non_basic_lands
-
-    for perm in valid_permutations:
-        temp_lands = []
-        for c, count in perm.items():
-            if count > 0:
-                temp_lands.extend(create_basic_lands(c, count))
-
-        test_deck = base_deck + temp_lands
-
-        # We only need 2000 iterations to accurately sort permutations
-        stats = simulate_deck(test_deck, iterations=2000)
-        if not stats:
-            continue
-
-        # Fitness Function: Maximize playing on curve, TRIPLE penalty for color screw
-        score = (
-            stats["cast_t2"]
-            + stats["cast_t3"]
-            + stats["cast_t4"]
-            + (stats["curve_out"] * 2.0)
-            - (stats["mulligans"] * 1.5)
-            - (stats["screw_t3"] * 1.5)
-            - (stats["color_screw_t3"] * 3.0)
-        )
-
-        if score > best_score:
-            best_score = score
-            best_perm = perm
-
-    # 4. Return the absolute best one
-    final_lands = []
-    for c, count in best_perm.items():
-        if count > 0:
-            final_lands.extend(create_basic_lands(c, count))
-
-    return final_lands
-
-
 def optimize_deck(base_deck, base_sb, archetype_key, colors):
     total_cards = sum(c.get("count", 1) for c in base_deck)
     if total_cards != 40:
@@ -510,6 +426,47 @@ def _mana_fitness(stats):
     )
 
 
+def _finalist_mana_base(deck_cards, pool, identity_colors, metrics):
+    """Exact-40-gated finalist wiring around mana_base.brute_force_mana_base.
+
+    Validates the candidate before handing it to the live optimizer (which
+    Custom-Deck Auto-Lands also uses, unchanged): exactly 40 cards, no more
+    copies of any spell or nonbasic than the pool owns (basics are exempt —
+    they have no pool entry). Raises ValueError on violation instead of
+    letting brute_force_mana_base silently return its first permutation for
+    an invalid input. forced_count is a BASIC-land count: the optimizer
+    appends basics to spells + nonbasics.
+    """
+    from src.advisor import mana_base as mb
+
+    spells = [c for c in deck_cards if "Land" not in c.get("types", [])]
+    lands = [c for c in deck_cards if "Land" in c.get("types", [])]
+    nonbasics = [
+        c
+        for c in lands
+        if c.get("name") not in constants.BASIC_LANDS
+        and "Basic" not in c.get("types", [])
+    ]
+    total = sum(c.get("count", 1) for c in deck_cards)
+    if total != 40:
+        raise ValueError(f"finalist mana base needs exactly 40 cards, got {total}")
+
+    owned = {}
+    for c in pool:
+        owned[c.get("name", "")] = owned.get(c.get("name", ""), 0) + c.get("count", 1)
+    for c in spells + nonbasics:
+        if c.get("count", 1) > owned.get(c.get("name", ""), 0):
+            raise ValueError(
+                f"candidate uses more copies of {c.get('name', '')} than the pool owns"
+            )
+
+    forced = max(0, 40 - sum(c.get("count", 1) for c in spells + nonbasics))
+    basics = mb.brute_force_mana_base(spells, nonbasics, identity_colors, forced_count=forced)
+    if not basics:
+        return deck_cards
+    return spells + nonbasics + basics
+
+
 def _deck_seed(deck_sig):
     """Stable per-deck seed (CRC32 of the signature): suggest_deck's MC term
     is reproducible run to run, a precondition for the CRN objective."""
@@ -799,6 +756,46 @@ def suggest_deck(
                     final_list.insert(1, final_list.pop(best_safe_idx))
                 # Otherwise leave it in its natural position: still shown and
                 # labeled, but not masquerading as a top pick.
+
+        # Finalist mana optimization: the top-3 variants are re-based with
+        # brute_force_mana_base (exact-40-gated wrapper; Auto-Lands' own path
+        # is untouched, and there is deliberately NO two-color short-circuit
+        # here — exact-pip castability still improves for 2-color decks).
+        # The finalist brute-force score is the one reported: these decks are
+        # re-scored, and the holistic + rescaled-mana formula is recomputed
+        # on the new configuration.
+        for idx in range(min(3, len(final_list))):
+            label, data = final_list[idx]
+            try:
+                redeck = _finalist_mana_base(
+                    data["deck_cards"], taken_cards, data.get("identity_colors") or data.get("colors"), metrics
+                )
+            except ValueError:
+                continue
+            if redeck is data["deck_cards"]:
+                continue
+            pips_d, active_d = deck_pips_and_colors(redeck)
+            identity_d = deck_color_identity(redeck)
+            deck_sig_d = "|".join(
+                sorted(f"{c['name']}:{c.get('count', 1)}" for c in redeck)
+            )
+            stats_d = simulate_deck(
+                redeck, iterations=MC_ITERATIONS, seed=_deck_seed(deck_sig_d)
+            )
+            score_d, breakdown_d = calculate_holistic_score(
+                redeck, identity_d, pool_size, metrics
+            )
+            if stats_d:
+                score_d += MC_FITNESS_WEIGHT * _mana_fitness(stats_d)
+                score_d = max(0.0, score_d)
+            data = dict(data)
+            data["deck_cards"] = redeck
+            data["colors"] = active_d or data.get("colors")
+            data["identity_colors"] = identity_d
+            data["rating"] = score_d
+            data["breakdown"] = breakdown_d
+            data["stats"] = stats_d or data.get("stats")
+            final_list[idx] = (label, data)
 
         for label, data in final_list:
             sorted_decks[label] = data
