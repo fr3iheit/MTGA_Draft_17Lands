@@ -313,7 +313,49 @@ def optimize_deck(base_deck, base_sb, archetype_key, colors):
         )
 
     if worst_spell and cuttable_land:
-        d, s = swap_cards(base_deck, base_sb, worst_spell, cuttable_land)
+        # The 18th land's COLOR follows the deck's needs (recomputed split),
+        # not whichever basic happens to appear first in deck order.
+        d_cut, s_cut = swap_cards(base_deck, base_sb, worst_spell, None)
+        spells_after = [c for c in d_cut if "Land" not in c.get("types", [])]
+        lands_after = [c for c in d_cut if "Land" in c.get("types", [])]
+        nonbasics_after = [
+            c
+            for c in lands_after
+            if c.get("name") not in constants.BASIC_LANDS
+            and "Basic" not in c.get("types", [])
+        ]
+
+        def _basic_counts(deck_cards):
+            counts = {}
+            for c in deck_cards:
+                if c.get("name") in constants.BASIC_LANDS or "Basic" in c.get(
+                    "types", []
+                ):
+                    counts[c["name"]] = counts.get(c["name"], 0) + c.get("count", 1)
+            return counts
+
+        existing_basics = _basic_counts(d_cut)
+        needed_basics = max(0, 18 - len(nonbasics_after))
+        with_extra = calculate_dynamic_mana_base(
+            spells_after, nonbasics_after, colors, forced_count=needed_basics
+        )
+        grown = _basic_counts(spells_after + nonbasics_after + with_extra)
+        extra_color = "W"
+        best_gain = -1
+        color_map_inv = {
+            "Plains": "W", "Island": "U", "Swamp": "B",
+            "Mountain": "R", "Forest": "G", "Wastes": "C",
+        }
+        for name, count in grown.items():
+            gain = count - existing_basics.get(name, 0)
+            if gain > best_gain:
+                best_gain = gain
+                extra_color = color_map_inv.get(name, "W")
+        synth_extra = create_basic_lands(extra_color, 1)[0]
+        d = list(d_cut) + [synth_extra]
+        cut_to_sb = dict(worst_spell)
+        cut_to_sb["count"] = 1
+        s = list(s_cut) + [cut_to_sb]
         permutations.append((f"Play 18 Lands (-{worst_spell['name']})", d, s))
 
     if cuttable_land and best_sb_spell:
@@ -370,29 +412,28 @@ def optimize_deck(base_deck, base_sb, archetype_key, colors):
                         (f"Optimize Mana (+{type_add}, -{type_sub})", d, s)
                     )
 
+    # One MC objective with common random numbers: every permutation is
+    # scored under the SAME seed (shared trials within the round) using the
+    # shared _mana_fitness, and the winner gets one common fresh 10k
+    # evaluation. Auto-Optimize is deterministic run to run.
+    base_sig = "|".join(
+        sorted(f"{c['name']}:{c.get('count', 1)}" for c in base_deck)
+    )
+    round_seed = _deck_seed(base_sig)
     best_score = -9999
     best_perm = permutations[0]
 
     for desc, p_deck, p_sb in permutations:
-        stats = simulate_deck(p_deck, iterations=500)
+        stats = simulate_deck(p_deck, iterations=500, seed=round_seed)
         if not stats:
             continue
-        score = (
-            stats["cast_t2"]
-            + stats["cast_t3"]
-            + stats["cast_t4"]
-            + (stats["curve_out"] * 2)
-            - stats["mulligans"]
-            - (stats["screw_t3"] * 1.5)
-            - (stats["color_screw_t3"] * 2.0)
-            - (stats["flood_t5"] * 1.5)
-        )
+        score = _mana_fitness(stats)
         if score > best_score:
             best_score = score
             best_perm = (desc, p_deck, p_sb)
 
     final_deck, final_sb = best_perm[1], best_perm[2]
-    final_stats = simulate_deck(final_deck, iterations=10000)
+    final_stats = simulate_deck(final_deck, iterations=10000, seed=round_seed + 999)
     return final_deck, final_sb, final_stats, f"Optimized: {best_perm[0]}"
 
 
