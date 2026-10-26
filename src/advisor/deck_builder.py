@@ -436,33 +436,8 @@ def suggest_deck(
             if spell_count < 15:
                 return
 
-            pips = {c: 0 for c in constants.CARD_COLORS}
-            for card in spells:
-                cost = card.get("mana_cost", "")
-                if not cost:
-                    for c in card.get("colors", []):
-                        if c in pips:
-                            pips[c] += card.get("count", 1)
-                    continue
-                for pip in re.findall(r"\{(.*?)\}", cost):
-                    for opt in [
-                        c for c in pip.split("/") if c in constants.CARD_COLORS
-                    ]:
-                        pips[opt] += card.get("count", 1)
-
-            active_colors = sorted(
-                [c for c, count in pips.items() if count > 0],
-                key=lambda x: pips[x],
-                reverse=True,
-            )
-
-            # A deck's true color identity ignores incidental single pips from a
-            # lone gold/hybrid card (e.g. one 5-color card adding a stray white
-            # pip to a Golgari deck). Such a deck is still mechanically 2-color
-            # and should qualify as a non-soupy "safe" option.
-            identity_colors = [c for c in active_colors if pips.get(c, 0) >= 2]
-            if not identity_colors:
-                identity_colors = active_colors[:2] if active_colors else []
+            pips, active_colors = deck_pips_and_colors(deck)
+            identity_colors = deck_color_identity(deck)
 
             if not active_colors:
                 true_arch_key, true_variant_name = arch_key, variant_name
@@ -510,7 +485,7 @@ def suggest_deck(
             else:
                 opt_stats = simulate_deck(opt_deck, iterations=10000)
                 score, breakdown = calculate_holistic_score(
-                    opt_deck, active_colors, pool_size, metrics
+                    opt_deck, identity_colors, pool_size, metrics
                 )
 
                 if opt_stats:
@@ -759,6 +734,41 @@ def build_variant_consistency(pool, colors, metrics, tier_data=None):
         spells, non_basic_lands, colors, forced_count=needed_basics
     )
     return stack_cards(spells + non_basic_lands + basics)
+
+
+def deck_pips_and_colors(deck):
+    """Pip histogram and pip-descending color list over a deck's spells."""
+    spells = [c for c in deck if "Land" not in c.get("types", [])]
+    pips = {c: 0 for c in constants.CARD_COLORS}
+    for card in spells:
+        cost = card.get("mana_cost", "")
+        if not cost:
+            for c in card.get("colors", []):
+                if c in pips:
+                    pips[c] += card.get("count", 1)
+            continue
+        for pip in re.findall(r"\{(.*?)\}", cost):
+            for opt in [c for c in pip.split("/") if c in constants.CARD_COLORS]:
+                pips[opt] += card.get("count", 1)
+    active_colors = sorted(
+        [c for c, count in pips.items() if count > 0],
+        key=lambda x: pips[x],
+        reverse=True,
+    )
+    return pips, active_colors
+
+
+def deck_color_identity(deck_cards):
+    """A deck's true color identity ignores incidental single pips from a lone
+    gold/hybrid card (e.g. one 5-color card adding a stray white pip to a
+    Golgari deck). Such a deck is still mechanically 2-color. Shared by the
+    suggester's holistic scoring and the engine's lookahead so both score the
+    same deck under the same color regime."""
+    pips, active_colors = deck_pips_and_colors(deck_cards)
+    identity = [c for c in active_colors if pips.get(c, 0) >= 2]
+    if not identity:
+        identity = active_colors[:2] if active_colors else []
+    return identity
 
 
 def build_variant_greedy(pool, colors, metrics, tier_data=None):

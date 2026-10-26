@@ -462,3 +462,89 @@ def test_deserving_splash_still_swaps_in(mock_metrics):
 
     assert splash == "G"
     assert any(c["name"] == "GG Bomb" for c in deck)
+
+
+# --- B4: decks are scored under their color identity, everywhere ---
+
+
+def _gb_pool_with_stray_w_pip():
+    pool = []
+    for i in range(21):
+        pool.append(
+            {
+                "name": f"GB Spell {i}",
+                "colors": ["G", "B"],
+                "types": ["Creature"],
+                "cmc": 3,
+                "mana_cost": "{1}{G}{B}",
+                "deck_colors": {"All Decks": {"gihwr": 58.0}, "GB": {"gihwr": 60.0}},
+            }
+        )
+    pool.append(
+        {
+            "name": "Gold Stray W Pip",
+            "colors": ["G", "B", "W"],
+            "types": ["Creature"],
+            "cmc": 3,
+            "mana_cost": "{1}{G}{B}{W}",
+            "deck_colors": {"All Decks": {"gihwr": 59.0}},
+        }
+    )
+    pool += [
+        {
+            "name": f"Dual GW {i}",
+            "colors": ["G", "W"],
+            "types": ["Land"],
+            "deck_colors": {"All Decks": {"gihwr": 55.0}},
+        }
+        for i in range(2)
+    ]
+    return pool
+
+
+def test_suggester_scores_stray_pip_deck_under_identity(mock_metrics):
+    """A Golgari deck with one gold card carrying a single white pip is still
+    2-color: no Greedy Mana Strain penalty, identity == GB (parent passed the
+    raw 3-color active list to the holistic scorer)."""
+    from src.card_logic import suggest_deck
+    from src.configuration import Configuration
+
+    pool = _gb_pool_with_stray_w_pip()
+    variants = suggest_deck(pool, mock_metrics, Configuration(), event_type="PremierDraft")
+    stray = [
+        (label, vd)
+        for label, vd in (variants or {}).items()
+        if any(c.get("name") == "Gold Stray W Pip" for c in vd.get("deck_cards", []))
+    ]
+    assert stray, "the gold card must land in some variant"
+    for label, vd in stray:
+        assert "Greedy Mana Strain" not in str(vd.get("breakdown", ""))
+        assert set(vd.get("identity_colors", [])) == {"G", "B"}
+
+
+def test_lookahead_scores_stray_pip_deck_under_identity(mock_metrics):
+    """The engine's greedy lookahead branch must score the same deck under the
+    same identity the suggester uses — captured at the calculate_holistic_score
+    call site."""
+    from unittest.mock import patch
+    from src.card_logic import calculate_holistic_score
+    from src.advisor.engine import DraftAdvisor
+
+    pool = _gb_pool_with_stray_w_pip()
+
+    captured = []
+    real = calculate_holistic_score
+
+    def spy(deck, colors, pool_size, metrics):
+        captured.append((tuple(sorted(colors)), any(c.get("name") == "Gold Stray W Pip" for c in deck)))
+        return real(deck, colors, pool_size, metrics)
+
+    advisor = DraftAdvisor(mock_metrics, pool)
+    # No color options: only the soup branch runs, and soup is the variant that
+    # carries the multi-color gold card.
+    with patch("src.card_logic.calculate_holistic_score", side_effect=spy):
+        advisor._get_fast_best_deck_score(pool, [], pool_size=len(pool))
+
+    stray_calls = [colors for colors, has_stray in captured if has_stray]
+    assert stray_calls, "the soup deck must contain and score the gold card"
+    assert all(set(colors) == {"G", "B"} for colors in stray_calls)

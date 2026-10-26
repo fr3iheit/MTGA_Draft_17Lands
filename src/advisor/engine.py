@@ -700,7 +700,14 @@ class DraftAdvisor:
 
             deck, splash = build_variant_greedy(pool, main_colors, self.metrics)
             if deck:
-                target_colors = main_colors + [splash] if splash else main_colors
+                # Score by the deck's own identity (shared helper with the
+                # suggester) so the lookahead and the suggester never score the
+                # same deck under different color regimes.
+                from src.advisor.deck_builder import deck_color_identity
+
+                target_colors = deck_color_identity(deck) or (
+                    main_colors + [splash] if splash else main_colors
+                )
                 score, _ = calculate_holistic_score(
                     deck, target_colors, effective_size, self.metrics
                 )
@@ -709,7 +716,11 @@ class DraftAdvisor:
 
         deck, soup_colors = build_variant_soup(pool, self.metrics)
         if deck:
-            target_colors = soup_colors[:3] if soup_colors else ["All Decks"]
+            from src.advisor.deck_builder import deck_color_identity
+
+            target_colors = deck_color_identity(deck) or (
+                soup_colors[:3] if soup_colors else ["All Decks"]
+            )
             score, _ = calculate_holistic_score(
                 deck, target_colors, effective_size, self.metrics
             )
