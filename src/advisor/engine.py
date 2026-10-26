@@ -280,11 +280,15 @@ class DraftAdvisor:
                 )
 
                 # === MASTER ALGORITHM ===
+                # The deck-improvement bonus compares decks whose builders
+                # already filter is_castable(strict=True): applying cast_mult
+                # here discounted the same signal twice.
                 final_score = (
-                    (base_score + power_bonus + synergy_bonus + deck_improvement_bonus)
+                    (base_score + power_bonus + synergy_bonus)
                     * cast_mult
                     * role_mult
                     * wheel_mult
+                    + deck_improvement_bonus
                 )
 
                 is_basic_land = name in constants.BASIC_LANDS or (
@@ -582,7 +586,11 @@ class DraftAdvisor:
             # Allow premium 1-for-1s to be splashed just like game-winning bombs
             if z_score >= self.BOMB_Z_SCORE or is_premium_removal:
                 if off_color_pips == 1:
-                    if has_specific_fixing or self.pool_metrics["fixing_count"] >= (
+                    # Color-specific conjunction: generic fixing_count alone
+                    # must not unlock a splash (three green duals do not pay
+                    # for a blue pip); the pool must also be fixing-rich
+                    # enough overall (3 before pack 3, 4 in pack 3).
+                    if has_specific_fixing and self.pool_metrics["fixing_count"] >= (
                         4 if pack == 3 else 3
                     ):
                         reason = (

@@ -471,3 +471,115 @@ def test_junk_card_earns_no_improvement_bonus_at_stepping_size():
     )
     recs = advisor.evaluate_pack([junk], 1, current_pack=3)
     assert not [r for rec in recs for r in rec.reasoning if "Improves Best Deck" in r]
+
+
+# --- B8: castability discount applied once; color-specific splash gate ---
+
+
+class _FixMetrics:
+    """Metrics stub with fixed (mean, std)."""
+
+    def __init__(self, mean=55.0, std=4.0):
+        self._pair = (mean, std)
+
+    def get_metrics(self, *a, **k):
+        return self._pair
+
+
+def _bomb_with_single_u_pip():
+    return {
+        "name": "U Pip Bomb", "colors": ["U"], "types": ["Creature"], "cmc": 4,
+        "mana_cost": "{3}{U}",
+        # z = (63 - 55) / 4 = 2.0 >= BOMB_Z_SCORE
+        "deck_colors": {"All Decks": {"gihwr": 63.0, "samples": 5000}},
+    }
+
+
+def _gw_lane_pool(dual_colors=("G", "W"), duals=3):
+    """GBW-free Gruul lane pool with `duals` multicolor lands of dual_colors."""
+    pool = [
+        {"name": f"RG Spell {i}", "colors": ["R", "G"], "types": ["Creature"], "cmc": 3,
+         "mana_cost": "{1}{R}{G}", "deck_colors": {"All Decks": {"gihwr": 56.0}}}
+        for i in range(18)
+    ]
+    pool += [
+        {"name": f"Dual {dual_colors[0]}{dual_colors[1]} {i}", "colors": list(dual_colors),
+         "types": ["Land"], "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+        for i in range(duals)
+    ]
+    return pool
+
+
+def test_color_blind_fixing_does_not_unlock_bomb_splash():
+    """Three G/W duals raise fixing_count to 3 but fix nothing blue: the bomb
+    splash gate must require per-color fixing for the splash colors too."""
+    advisor = DraftAdvisor(_FixMetrics(), _gw_lane_pool(("G", "W"), duals=3))
+    advisor.main_colors = ["R", "G"]
+    advisor.pool_metrics["fixing_count"] = 3
+    mult, reason = advisor._calculate_castability_v5(
+        _bomb_with_single_u_pip(), pack=2, pick=1, z_score=2.0
+    )
+    assert reason != "Bomb Splash"
+    assert mult < 0.45
+
+
+def test_specific_fixing_with_rich_pool_unlocks_bomb_splash():
+    """The conjunction: per-color fixing present AND fixing_count over the pack
+    threshold (3 before pack 3, 4 in pack 3)."""
+    advisor = DraftAdvisor(_FixMetrics(), _gw_lane_pool(("G", "U"), duals=3))
+    advisor.main_colors = ["R", "G"]
+    advisor.pool_metrics["fixing_count"] = 3
+
+    mult, reason = advisor._calculate_castability_v5(
+        _bomb_with_single_u_pip(), pack=2, pick=1, z_score=2.0
+    )
+    assert (mult, reason) == (0.45, "Bomb Splash")
+
+    mult, reason = advisor._calculate_castability_v5(
+        _bomb_with_single_u_pip(), pack=3, pick=1, z_score=2.0
+    )
+    assert reason != "Bomb Splash"  # pack 3 needs 4 total
+
+    advisor.pool_metrics["fixing_count"] = 4
+    mult, reason = advisor._calculate_castability_v5(
+        _bomb_with_single_u_pip(), pack=3, pick=1, z_score=2.0
+    )
+    assert (mult, reason) == (0.35, "Bomb Splash")
+
+
+def test_deck_improvement_bonus_not_discounted_by_castability(monkeypatch):
+    """The improvement bonus joins the score after the castability multiplier:
+    halving castability must halve every other term but keep the bonus whole —
+    ctx(0.5) - 0.5*ctx(1.0) == 0.5*bonus > 0."""
+    pool = [
+        {"name": f"WB Spell {i}", "colors": ["W", "B"], "types": ["Creature"], "cmc": 3,
+         "mana_cost": "{1}{W}{B}",
+         "deck_colors": {"All Decks": {"gihwr": 60.0, "samples": 5000}}}
+        for i in range(23)
+    ]
+    improver = {
+        "name": "W Splash Improver", "colors": ["W"], "types": ["Creature"], "cmc": 2,
+        "mana_cost": "{1}{W}",
+        "deck_colors": {"All Decks": {"gihwr": 72.0, "samples": 5000}},
+    }
+    pool += [
+        {"name": f"Dual BW {i}", "colors": ["B", "W"], "types": ["Land"],
+         "deck_colors": {"All Decks": {"gihwr": 55.0}}}
+        for i in range(3)
+    ]
+
+    def run(cast_mult):
+        advisor = DraftAdvisor(_FixMetrics(), pool)
+        monkeypatch.setattr(
+            DraftAdvisor,
+            "_calculate_castability_v5",
+            lambda self, *a, **k: (cast_mult, ""),
+        )
+        recs = advisor.evaluate_pack([improver], 1, current_pack=3)
+        monkeypatch.undo()
+        assert recs
+        assert any("Improves Best Deck" in r for rec in recs for r in rec.reasoning)
+        return recs[0].contextual_score
+
+    ctx_one, ctx_half = run(1.0), run(0.5)
+    assert ctx_half - 0.5 * ctx_one > 0.05
