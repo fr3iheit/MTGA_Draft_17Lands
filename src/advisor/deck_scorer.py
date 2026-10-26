@@ -9,6 +9,14 @@ from src.advisor.mana_base import ManaSourceAnalyzer
 from src.utils import normalize_color_string
 from src.sealed_logic import HeuristicEvaluator
 
+# Named projection concepts (distinct from the advisor engine's pick-index
+# TOTAL_PICKS=45 and card-total TOTAL_CARDS_DRAFTED=45 on purpose): this scorer
+# projects a partial pool toward a full draft's spell target. Pool sizes 43-45
+# are behaviorally identical under this projection, so 42 vs 45 is a documented
+# consistency choice, not a bug to unify.
+SPELL_TARGET_PROJECTION_BASE = 42
+TARGET_SPELL_COUNT = 23
+
 TIER_TO_GIHWR = {
     "A+": 68.0,
     "A ": 66.0,
@@ -250,7 +258,10 @@ def calculate_holistic_score(deck, colors, pool_size, metrics, tier_data=None):
         power_level -= 5.0
         breakdown_notes.append("Lacks Evasion/Reach (-5.0)")
 
-    expected_spells = int(23 * (min(42, pool_size) / 42.0))
+    expected_spells = int(
+        TARGET_SPELL_COUNT
+        * (min(SPELL_TARGET_PROJECTION_BASE, pool_size) / SPELL_TARGET_PROJECTION_BASE)
+    )
     if spell_count < expected_spells - 1:
         penalty = ((expected_spells - 1) - spell_count) * 10.0
         power_level -= penalty

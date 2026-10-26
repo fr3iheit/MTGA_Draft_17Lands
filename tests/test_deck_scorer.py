@@ -295,3 +295,23 @@ def test_estimate_record():
     # BO3 (Traditional Draft)
     assert "3-0" in estimate_record(90.0, is_bo3=True)
     assert "0-2" in estimate_record(50.0, is_bo3=True)
+
+
+def test_denominator_concepts_are_named_not_bare():
+    """The 45-based pick/card totals live in the engine as named class
+    constants; the 42-based spell-target projection lives here as named module
+    constants — the two stay distinct numbers with documented semantics."""
+    import inspect
+
+    import src.advisor.deck_scorer as scorer
+    from src.advisor.engine import DraftAdvisor
+
+    assert scorer.SPELL_TARGET_PROJECTION_BASE == 42
+    assert scorer.TARGET_SPELL_COUNT == 23
+    assert DraftAdvisor.TOTAL_PICKS == 45  # pick-index clamp, distinct concept
+    assert DraftAdvisor.TOTAL_CARDS_DRAFTED == 45  # projection base, distinct concept
+
+    for line in inspect.getsource(scorer).splitlines():
+        if "expected_spells = int(" in line or "TARGET_SPELL_COUNT" in line and "min(" in line:
+            assert "42" not in line.split("#")[0], f"bare 42 in expression: {line}"
+            assert "23 *" not in line, f"bare 23 multiplier in expression: {line}"
