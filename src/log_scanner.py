@@ -1315,6 +1315,28 @@ class ArenaScanner:
             return 2
         return 1
 
+    @property
+    def total_picks(self):
+        """Total pick events in the active draft format (Pick-Two: 21, otherwise 45)."""
+        if self.draft_type in [
+            constants.LIMITED_TYPE_DRAFT_PICK_TWO,
+            constants.LIMITED_TYPE_DRAFT_PICK_TWO_TRAD,
+            constants.LIMITED_TYPE_DRAFT_PICK_TWO_QUICK,
+        ]:
+            return 21
+        return 45
+
+    @property
+    def total_cards(self):
+        """Total cards drafted in the active format (Pick-Two: 42, otherwise 45)."""
+        if self.draft_type in [
+            constants.LIMITED_TYPE_DRAFT_PICK_TWO,
+            constants.LIMITED_TYPE_DRAFT_PICK_TWO_TRAD,
+            constants.LIMITED_TYPE_DRAFT_PICK_TWO_QUICK,
+        ]:
+            return 42
+        return 45
+
     def retrieve_taken_cards(self):
         with self.lock:
             return self.set_data.get_data_by_id(self.taken_cards)

@@ -605,3 +605,20 @@ def test_quick_pickedcards_sync_survives_late_pick_echo(function_scanner):
 
     counts = Counter(function_scanner.taken_cards)
     assert counts["106259"] == 1
+
+
+def test_pick_two_format_totals(function_scanner):
+    """The scanner exposes the format's pick and card totals: Pick-Two drafts
+    42 cards over 21 pick events (14-card packs, 4 players, 2 cards per pick);
+    every other draft type is 45 over 45."""
+    from src import constants as app_constants
+
+    function_scanner.draft_type = app_constants.LIMITED_TYPE_DRAFT_PICK_TWO_QUICK
+    assert function_scanner.total_picks == 21
+    assert function_scanner.total_cards == 42
+    assert function_scanner.cards_per_pick == 2
+
+    function_scanner.draft_type = app_constants.LIMITED_TYPE_DRAFT_QUICK
+    assert function_scanner.total_picks == 45
+    assert function_scanner.total_cards == 45
+    assert function_scanner.cards_per_pick == 1

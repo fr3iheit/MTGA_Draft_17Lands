@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 class DraftAdvisor:
-    TOTAL_PICKS = 45
+    TOTAL_PICKS = 45  # upper bound for the pack-local pick index
+    # Projection base: cards in a full draft. Distinct concept from TOTAL_PICKS
+    # on purpose (Pick-Two drafts 42 cards over 21 picks); do not unify.
+    TOTAL_CARDS_DRAFTED = 45
     TARGET_EARLY_PLAYS = 7
     TARGET_HARD_REMOVAL = 3
     CAP_COMBAT_TRICKS = 3
@@ -30,11 +33,28 @@ class DraftAdvisor:
     IWD_PREMIUM_THRESHOLD = 4.5
 
     def __init__(
-        self, set_metrics, taken_cards: List[Dict], signals: Dict[str, float] = None
+        self,
+        set_metrics,
+        taken_cards: List[Dict],
+        signals: Dict[str, float] = None,
+        draft_progress: Dict = None,
     ):
         self.metrics = set_metrics
         self.pool = taken_cards or []
         self.signals = signals or {}
+
+        # Draft progress captured from the controller's locked scanner snapshot:
+        # picks (1-based, already normalized by cards_per_pick), total_picks,
+        # cards (raw picked-ID count, before metadata resolution), total_cards.
+        # None = legacy derivation for tests of other mechanics: progress from
+        # the pack-local pick, counts from the (filtered) pool.
+        self.draft_progress = draft_progress or {}
+        self._progress_picks = self.draft_progress.get("picks")
+        self._total_picks = self.draft_progress.get("total_picks", self.TOTAL_PICKS)
+        self._total_cards = self.draft_progress.get(
+            "total_cards", self.TOTAL_CARDS_DRAFTED
+        )
+        self._raw_card_count = self.draft_progress.get("cards", len(self.pool))
 
         # 1. Base statistical baselines
         self.global_mean, self.global_std = self.metrics.get_metrics(
@@ -59,12 +79,29 @@ class DraftAdvisor:
         self.pool_metrics = self._analyze_pool()
 
     def evaluate_pack(
-        self, pack_cards: List[Dict], current_pick: int, current_pack: int = 1
+        self,
+        pack_cards: List[Dict],
+        current_pick: int,
+        current_pack: int = 1,
+        draft_progress: Dict = None,
     ) -> List[Recommendation]:
         if not pack_cards:
             return []
         safe_pick = max(1, min(self.TOTAL_PICKS, current_pick))
         pack_number = max(1, current_pack)
+        if draft_progress:
+            self.draft_progress = draft_progress
+            self._progress_picks = draft_progress.get("picks")
+            self._total_picks = draft_progress.get("total_picks", self.TOTAL_PICKS)
+            self._total_cards = draft_progress.get(
+                "total_cards", self.TOTAL_CARDS_DRAFTED
+            )
+            self._raw_card_count = draft_progress.get("cards", len(self.pool))
+        # Draft-wide progress (pick events made + 1), clamped to the format's
+        # pick total. The pack-local safe_pick keeps feeding the wheel path,
+        # castability and lateness terms.
+        progress_picks = self._progress_picks or safe_pick
+        progress_picks = max(1, min(self._total_picks, progress_picks))
 
         on_color_pool = [
             c
@@ -103,7 +140,7 @@ class DraftAdvisor:
 
         self.base_deck_score = 0.0
         self.color_options = []
-        if pack_number >= 3 and len(self.pool) >= 23:
+        if pack_number >= 3 and self._raw_card_count >= 23:
             try:
                 from src.card_logic import identify_top_pairs
 
@@ -130,7 +167,7 @@ class DraftAdvisor:
                 reasons, synergy_bonus = [], 0.0
 
                 # --- STEP 1: Blended Base Score (With Bayesian Smoothing & Signals) ---
-                base_score = self._calculate_weighted_score(card, safe_pick)
+                base_score = self._calculate_weighted_score(card, progress_picks)
 
                 # --- STEP 2: Bomb Detection ---
                 z_score = (raw_gihwr - pack_mean) / pack_std
@@ -221,7 +258,7 @@ class DraftAdvisor:
 
                 # --- STEP 7.5: Late Draft Deck Improvement ---
                 deck_improvement_bonus = 0.0
-                if pack_number >= 3 and len(self.pool) >= 23:
+                if pack_number >= 3 and self._raw_card_count >= 23:
                     try:
                         test_pool = self.pool + [card]
                         new_score = self._get_fast_best_deck_score(
@@ -322,7 +359,7 @@ class DraftAdvisor:
                 continue
         sorted_w = sorted(color_weights.items(), key=lambda x: x[1], reverse=True)
         main_colors = []
-        if total_pool_size >= 15 and sum(color_counts.values()) > 5:
+        if self._raw_card_count >= 15 and sum(color_counts.values()) > 5:
             threshold = sum(color_counts.values()) * 0.15
             leader_set = [
                 v[0]
@@ -411,6 +448,13 @@ class DraftAdvisor:
             "counters_enablers": counters_enablers,
         }
 
+    def _projected_total(self, count: int) -> float:
+        """Projects a resolved-pool count to a full draft. Both the numerator
+        count and the denominator pool are resolved-card quantities, so the
+        projection legitimately moves when a card resolves and changes
+        composition; only progress-derived terms must be resolution-invariant."""
+        return count * (self._total_cards / max(1, len(self.pool)))
+
     def _calculate_composition_bonus(self, card: Dict, pack: int) -> Tuple[float, str]:
         tags, cmc = card.get("tags", []), get_functional_cmc(card)
         types = card.get("types", [])
@@ -421,8 +465,8 @@ class DraftAdvisor:
 
         # 2. Creature Quota Check
         if pack >= 2 and "Creature" in types:
-            projected_creatures = self.pool_metrics["creature_count"] * (
-                self.TOTAL_PICKS / max(1, len(self.pool))
+            projected_creatures = self._projected_total(
+                self.pool_metrics["creature_count"]
             )
             if projected_creatures < 13:
                 return 1.25, "Critical: Needs Creatures"
@@ -470,9 +514,7 @@ class DraftAdvisor:
 
         # 6. Early Interaction
         if cmc <= 2 and ("Creature" in types or "removal" in tags):
-            projected = self.pool_metrics["early_plays"] * (
-                self.TOTAL_PICKS / max(1, len(self.pool))
-            )
+            projected = self._projected_total(self.pool_metrics["early_plays"])
             if projected < self.TARGET_EARLY_PLAYS:
                 return (
                     (
@@ -593,7 +635,7 @@ class DraftAdvisor:
         try:
             stats = card.get("deck_colors", {})
             global_wr = float(stats.get("All Decks", {}).get("gihwr", 0.0))
-            arch_weight = min(0.9, 0.2 + (pick_number / self.TOTAL_PICKS) * 0.7)
+            arch_weight = min(0.9, 0.2 + (pick_number / self._total_picks) * 0.7)
             arch_stats = stats.get(self.main_archetype, {})
             arch_wr = float(arch_stats.get("gihwr", global_wr))
 
