@@ -18,10 +18,13 @@ SPELL_TARGET_PROJECTION_BASE = 42
 TARGET_SPELL_COUNT = 23
 
 # Bayesian shrinkage toward the set mean (global) / global + pair-offset
-# (archetype). PROVISIONAL: k belongs to cycle 5's calibration surface
-# (per-set fit against later, disjoint outcomes) and is expressed in game
-# counts (ever_drawn_game_count), not picks.
-SHRINKAGE_K = 2000
+# (archetype), in game counts (ever_drawn_game_count). Value fitted by
+# empirical Bayes (Beta-binomial method of moments on between-card variance,
+# net of binomial noise) across FRA/DFT/VOW/Cube Premier tables:
+# per-set k_hat 287..504, pooled median ~350 (evidence/nextgen/
+# ADR-architecture.md + tools-data/k_fit_results.json). Per-set and
+# per-statistic refinement belongs to the tier-1 calibration pass.
+SHRINKAGE_K = 350
 
 
 def shrunk_wr(raw, prior, n, k=SHRINKAGE_K):

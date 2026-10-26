@@ -377,10 +377,12 @@ def _flat_metrics(mean=54.0, std=4.0):
 
 
 def test_shrunk_wr_formula_and_n_zero_passthrough():
-    from src.advisor.deck_scorer import shrunk_wr
+    from src.advisor.deck_scorer import SHRINKAGE_K, shrunk_wr
 
     assert shrunk_wr(64.0, 54.0, 0) == 64.0  # no data: raw value, no shrinkage
-    assert shrunk_wr(64.0, 54.0, 20000) == 54.0 + 10.0 * (20000 / 22000)
+    assert shrunk_wr(64.0, 54.0, 20000) == 54.0 + 10.0 * (
+        20000 / (20000 + SHRINKAGE_K)
+    )
     # monotone in raw at fixed n: order preserved under shrinkage
     assert shrunk_wr(66.0, 54.0, 500) > shrunk_wr(64.0, 54.0, 500)
 
@@ -398,6 +400,7 @@ def test_spike_card_rates_global_dominated():
 def test_engine_blend_uses_shared_posterior_exact_number():
     """global 54, arch 64, n=20000, k=2000, offset 0, progress 31 (w=0.6822):
     shrunk arch = 63.0909..., blended = 60.2016..., base = 73.256..."""
+    from src.advisor.deck_scorer import SHRINKAGE_K
     from src.advisor.engine import DraftAdvisor
 
     metrics = _flat_metrics(54.0, 4.0)
@@ -413,7 +416,8 @@ def test_engine_blend_uses_shared_posterior_exact_number():
     card = _post_card(samples=20000)
     base = advisor._calculate_weighted_score(card, 31)
     w = 0.2 + (31 / 45) * 0.7  # arch ramp at progress 31
-    expected = 50.0 + (((54.0 + (10.0 * (20000 / 22000)) * w) - 54.0) / 4.0) * 15.0
+    shrunk = 54.0 + 10.0 * (20000 / (20000 + SHRINKAGE_K))
+    expected = 50.0 + (((54.0 + (shrunk - 54.0) * w) - 54.0) / 4.0) * 15.0
     assert base == pytest.approx(expected, abs=1e-6)
 
 
