@@ -647,10 +647,17 @@ class DraftAdvisor:
             arch_stats = stats.get(self.main_archetype, {})
             arch_wr = float(arch_stats.get("gihwr", global_wr))
 
-            # BAYESIAN SMOOTHING: Confidently blend global & archetype win rates based on sample size
+            # BAYESIAN SMOOTHING via the shared posterior helper (cycle 2,
+            # item 1a): the archetype rate shrinks toward global + pair-offset
+            # with n/(n+k); n <= 0 keeps the raw value (shipped fixtures have
+            # no samples field, so their pinned numbers are unchanged).
+            from src.advisor.deck_scorer import card_wr_posteriors
+
+            post = card_wr_posteriors(card, [self.main_archetype], self.metrics)
             samples = int(arch_stats.get("samples", 0))
-            confidence = min(1.0, samples / 1000.0)
-            trusted_arch_wr = (arch_wr * confidence) + (global_wr * (1.0 - confidence))
+            trusted_arch_wr = (
+                post["shrunk_arch"] if post["n"] > 0 else arch_wr
+            )
 
             blended_wr = (
                 (global_wr * (1.0 - arch_weight)) + (trusted_arch_wr * arch_weight)

@@ -355,3 +355,91 @@ def test_unrated_spells_lower_the_deck_average():
     score_unrated = _holistic(rated + unrated)
     score_fillers = _holistic(rated + fillers)
     assert score_unrated < score_fillers - 1.0
+
+
+# --- Cycle 2 item 1a: shared shrunk posteriors ---
+
+
+def _post_card(global_wr=54.0, arch_wr=64.0, samples=0, arch="RG"):
+    dc = {"All Decks": {"gihwr": global_wr}}
+    if arch:
+        dc[arch] = {"gihwr": arch_wr, "samples": samples}
+    return {"name": "Posterior Card", "colors": ["R", "G"], "types": ["Creature"],
+            "cmc": 3, "deck_colors": dc}
+
+
+def _flat_metrics(mean=54.0, std=4.0):
+    from unittest.mock import MagicMock
+
+    m = MagicMock()
+    m.get_metrics.return_value = (mean, std)
+    return m
+
+
+def test_shrunk_wr_formula_and_n_zero_passthrough():
+    from src.advisor.deck_scorer import shrunk_wr
+
+    assert shrunk_wr(64.0, 54.0, 0) == 64.0  # no data: raw value, no shrinkage
+    assert shrunk_wr(64.0, 54.0, 20000) == 54.0 + 10.0 * (20000 / 22000)
+    # monotone in raw at fixed n: order preserved under shrinkage
+    assert shrunk_wr(66.0, 54.0, 500) > shrunk_wr(64.0, 54.0, 500)
+
+
+def test_spike_card_rates_global_dominated():
+    """A ten-game 64% spike is shrunk to the prior: the rating stays at the
+    global-dominated value (offset 0 under flat metrics)."""
+    from src.advisor.deck_scorer import get_card_rating
+
+    card = _post_card(samples=10)
+    rating = get_card_rating(card, ["R", "G"], _flat_metrics())
+    assert rating == pytest.approx(54.0, abs=0.3)
+
+
+def test_engine_blend_uses_shared_posterior_exact_number():
+    """global 54, arch 64, n=20000, k=2000, offset 0, progress 31 (w=0.6822):
+    shrunk arch = 63.0909..., blended = 60.2016..., base = 73.256..."""
+    from src.advisor.engine import DraftAdvisor
+
+    metrics = _flat_metrics(54.0, 4.0)
+    pool = [
+        {"name": f"RG {i}", "colors": ["R", "G"], "types": ["Creature"], "cmc": 3,
+         "deck_colors": {"All Decks": {"gihwr": 54.0}}}
+        for i in range(12)
+    ]
+    advisor = DraftAdvisor(
+        metrics, pool,
+        draft_progress={"picks": 31, "total_picks": 45, "cards": 30, "total_cards": 45},
+    )
+    card = _post_card(samples=20000)
+    base = advisor._calculate_weighted_score(card, 31)
+    w = 0.2 + (31 / 45) * 0.7  # arch ramp at progress 31
+    expected = 50.0 + (((54.0 + (10.0 * (20000 / 22000)) * w) - 54.0) / 4.0) * 15.0
+    assert base == pytest.approx(expected, abs=1e-6)
+
+
+def test_no_samples_keeps_pinned_raw_behavior():
+    """Shipped fixture datasets carry no `samples`: every rating path must
+    reproduce the pre-cycle-2 numbers exactly (the 57.0 blend pin)."""
+    from src.advisor.deck_scorer import get_card_rating
+
+    card = _post_card(global_wr=50.0, arch_wr=60.0, samples=0)
+    assert get_card_rating(card, ["R", "G"], _flat_metrics()) == pytest.approx(57.0)
+
+
+def test_low_sample_bad_cards_do_not_flip_pair_selection():
+    """The playable gate uses raw WR: low-n cards shrunk toward the mean must
+    not cross the baseline and steer identify_top_pairs."""
+    from src.advisor.deck_scorer import identify_top_pairs
+
+    good = [
+        {"name": f"Good U {i}", "colors": ["U"], "types": ["Creature"], "cmc": 2,
+         "deck_colors": {"All Decks": {"gihwr": 56.0, "samples": 50000}}}
+        for i in range(14)
+    ]
+    noisy_bad = [
+        {"name": f"Noisy B {i}", "colors": ["B"], "types": ["Creature"], "cmc": 3,
+         "deck_colors": {"All Decks": {"gihwr": 44.0, "samples": 5}}}
+        for i in range(10)
+    ]
+    pairs = identify_top_pairs(good + noisy_bad, _flat_metrics(54.0, 4.0))
+    assert pairs and "U" in pairs[0]  # deep good-U lane outranks the noisy lane

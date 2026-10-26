@@ -281,8 +281,8 @@ def _arch_card():
     return {
         "name": "Arch Card", "colors": ["R", "G"], "types": ["Creature"], "cmc": 3,
         "deck_colors": {
-            "All Decks": {"gihwr": 54.0, "samples": 5000},
-            "RG": {"gihwr": 64.0, "samples": 1000},
+            "All Decks": {"gihwr": 54.0, "samples": 10 ** 9},
+            "RG": {"gihwr": 64.0, "samples": 10 ** 9},
         },
     }
 

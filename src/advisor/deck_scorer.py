@@ -17,6 +17,60 @@ from src.sealed_logic import HeuristicEvaluator
 SPELL_TARGET_PROJECTION_BASE = 42
 TARGET_SPELL_COUNT = 23
 
+# Bayesian shrinkage toward the set mean (global) / global + pair-offset
+# (archetype). PROVISIONAL: k belongs to cycle 5's calibration surface
+# (per-set fit against later, disjoint outcomes) and is expressed in game
+# counts (ever_drawn_game_count), not picks.
+SHRINKAGE_K = 2000
+
+
+def shrunk_wr(raw, prior, n, k=SHRINKAGE_K):
+    """n/(n+k) shrinkage of raw toward prior. n <= 0 returns raw unchanged:
+    with no reliability information the caller's no-data policy applies."""
+    if n <= 0:
+        return raw
+    return prior + (raw - prior) * (n / (n + k))
+
+
+def card_wr_posteriors(card, colors, metrics=None):
+    """Posterior win-rate estimates for `card` under `colors`, WR scale only —
+    callers apply their own transforms. Returns a dict with raw values, the
+    game-count n, and the shrunk estimates. Shrinkage only applies for n > 0;
+    n comes from `samples` (ever_drawn_game_count; absent on shipped fixtures,
+    where every card therefore keeps today's raw-value behavior)."""
+    stats = card.get("deck_colors", {})
+    global_wr = float(stats.get("All Decks", {}).get("gihwr") or 0.0)
+    arch_key = normalize_color_string(
+        "".join(colors) if len(colors) <= 2 else "".join(colors[:2])
+    )
+    arch_stats = stats.get(arch_key, {}) if arch_key != "All Decks" else {}
+    arch_wr = float(arch_stats.get("gihwr") or 0.0) if arch_stats else global_wr
+    n = int(arch_stats.get("samples", 0) or 0) if arch_stats else 0
+
+    set_global_mean = global_wr
+    offset = 0.0
+    if metrics:
+        try:
+            g_mean, _ = metrics.get_metrics("All Decks", "gihwr")
+            if g_mean:
+                set_global_mean = float(g_mean)
+            if arch_stats and arch_key != "All Decks":
+                pair_mean, _ = metrics.get_metrics(arch_key, "gihwr")
+                if pair_mean:
+                    offset = float(pair_mean) - float(g_mean)
+        except Exception:
+            offset = 0.0
+
+    return {
+        "global_wr": global_wr,
+        "arch_wr": arch_wr,
+        "n": n,
+        "arch_prior": global_wr + offset,
+        "shrunk_global": shrunk_wr(global_wr, set_global_mean, n),
+        "shrunk_arch": shrunk_wr(arch_wr, global_wr + offset, n),
+        "pair_offset": offset,
+    }
+
 TIER_TO_GIHWR = {
     "A+": 68.0,
     "A ": 66.0,
@@ -54,12 +108,15 @@ def get_card_rating(card, colors, metrics=None, tier_data=None):
     )
     arch_wr = float(stats.get(arch_key, {}).get("gihwr") or 0.0)
 
+    post = card_wr_posteriors(card, colors, metrics)
+    arch_v = post["shrunk_arch"] if post["n"] > 0 else arch_wr
+    global_v = post["shrunk_global"] if post["n"] > 0 else global_wr
     if arch_wr > 30.0 and global_wr > 30.0:
-        return (arch_wr * 0.7) + (global_wr * 0.3)
+        return (arch_v * 0.7) + (global_v * 0.3)
     elif global_wr > 30.0:
-        return global_wr
+        return global_v
     elif arch_wr > 30.0:
-        return arch_wr
+        return arch_v
 
     if tier_data:
         name, tier_scores = card.get("name", ""), []
@@ -96,8 +153,14 @@ def identify_top_pairs(pool, metrics, tier_data=None):
 
     for card in pool:
         colors = card.get(constants.DATA_FIELD_COLORS, [])
+        raw_wr = float(
+            card.get("deck_colors", {}).get("All Decks", {}).get("gihwr") or 0.0
+        )
         wr = get_card_rating(card, ["All Decks"], metrics, tier_data)
-        if wr > playable_baseline:
+        # Raw-WR gate, shrunk weight: shrinkage pulls small-n cards toward the
+        # mean, so gating on the shrunk value would let low-sample noise cross
+        # the playable baseline and steer pair selection.
+        if raw_wr > playable_baseline:
             points = (wr - playable_baseline) / global_std
             for c in colors:
                 scores[c] += points
