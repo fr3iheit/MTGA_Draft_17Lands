@@ -787,9 +787,10 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
                 off_color_pips += 1
 
         if off_color_pips > 1:
-            total_fixing = fixing_sources.get(splash_col, 0) + count_fixing(pool).get(
-                splash_col, 0
-            )
+            # Count fixing once: fixing_sources is the hoisted per-color count;
+            # recomputing and adding it here doubled every source (2 sources
+            # passed a >= 3 gate).
+            total_fixing = fixing_sources.get(splash_col, 0)
             if not (
                 off_color_pips == 2
                 and get_functional_cmc(card) >= 5
@@ -821,16 +822,28 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
     splash_cap = 3 if fixing_sources.get(best_splash_col, 0) >= 3 else 2
 
     deck_spells = main_spells[:23]
+    splash_in_deck = False
     needed = 23 - len(deck_spells)
     if needed > 0:
         deck_spells.extend(valid_splashes[: min(needed, splash_cap)])
+        if valid_splashes:
+            splash_in_deck = True
         if sum(c.get("count", 1) for c in deck_spells) < 20:
             # Even a capped splash can't make this pair a real deck.
             return None, ""
     elif valid_splashes:
-        deck_spells = main_spells[:22] + [valid_splashes[0]]
+        # The splash must beat the 23rd spell it would cut on ONE shared scale:
+        # rate both with the deck's own colors. The old code swapped
+        # unconditionally, cutting a pair-proven on-color spell for a splash
+        # that had only cleared an absolute floor.
+        best_splash = valid_splashes[0]
+        if get_card_rating(best_splash, colors, metrics) > get_card_rating(
+            main_spells[22], colors, metrics
+        ):
+            deck_spells = main_spells[:22] + [best_splash]
+            splash_in_deck = True
 
-    target_colors = colors + [best_splash_col]
+    target_colors = colors + [best_splash_col] if splash_in_deck else list(colors)
     non_basic_lands = select_useful_lands(pool, target_colors, metrics)
 
     total_lands_needed = 40 - len(deck_spells)
@@ -847,7 +860,10 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
     basics = calculate_dynamic_mana_base(
         deck_spells, non_basic_lands, target_colors, forced_count=needed_basics
     )
-    return stack_cards(deck_spells + non_basic_lands + basics), best_splash_col
+    return (
+        stack_cards(deck_spells + non_basic_lands + basics),
+        best_splash_col if splash_in_deck else "",
+    )
 
 
 def build_variant_curve(pool, colors, metrics, tier_data=None):

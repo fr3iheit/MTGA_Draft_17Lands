@@ -356,3 +356,109 @@ def test_greedy_skips_unsupported_pair_instead_of_over_splashing(mock_metrics):
     deck, splash_col = build_variant_greedy(pool, ["B", "G"], mock_metrics)
 
     assert deck is None
+
+
+# --- B3a/B3b: greedy fixing count and 23rd-slot splash swap ---
+
+
+def _wb_spells(n):
+    cards = []
+    for i in range(n):
+        cards.append(
+            {
+                "name": f"WB Spell {i}",
+                "colors": ["W", "B"],
+                "types": ["Creature"],
+                "cmc": 3,
+                "mana_cost": "{1}{W}{B}",
+                "deck_colors": {"All Decks": {"gihwr": 58.0}, "WB": {"gihwr": 59.0}},
+            }
+        )
+    return cards
+
+
+def _duals(a, b, n):
+    return [
+        {
+            "name": f"Dual {a}{b} {i}",
+            "colors": [a, b],
+            "types": ["Land"],
+            "deck_colors": {"All Decks": {"gihwr": 55.0}},
+        }
+        for i in range(n)
+    ]
+
+
+def _off_color_double_pip(global_wr=65.0):
+    return {
+        "name": "GG Bomb",
+        "colors": ["G"],
+        "types": ["Creature"],
+        "cmc": 6,
+        "mana_cost": "{4}{G}{G}",
+        "deck_colors": {"All Decks": {"gihwr": global_wr}},
+    }
+
+
+def test_double_pip_splash_gate_counts_fixing_once(mock_metrics):
+    """Two real G-fixing sources must not pass a >= 3 gate: the old code
+    recomputed count_fixing per card and added it to itself, doubling it."""
+    from src.card_logic import build_variant_greedy
+
+    pool = _wb_spells(20) + _duals("W", "G", 2) + [_off_color_double_pip()]
+    deck, splash = build_variant_greedy(pool, ["W", "B"], mock_metrics)
+
+    assert splash == ""
+    assert deck is None or not any(c["name"] == "GG Bomb" for c in deck)
+
+
+def test_splash_must_beat_the_cut_spell_on_the_shared_scale(mock_metrics):
+    """Scale reversal: the splash rates higher on the All-Decks-only scale the
+    candidate pass uses (62 global vs the 23rd spell's 55 global), but the
+    23rd spell is pair-proven (WB blend 65.0) — the unconditional swap used to
+    cut it anyway."""
+    from src.card_logic import build_variant_greedy
+
+    pool = [
+        {
+            "name": f"WB Filler {i}",
+            "colors": ["W", "B"],
+            "types": ["Creature"],
+            "cmc": 3,
+            "mana_cost": "{1}{W}{B}",
+            "deck_colors": {"All Decks": {"gihwr": 64.0}},
+        }
+        for i in range(22)
+    ]
+    # Lowest-rated on the deck's own scale (blend 62.3 under the 64.0 fillers)
+    # but far from a free cut for a 61.5 global splash.
+    pool.append(
+        {
+            "name": "WB Diluted Pair",
+            "colors": ["W", "B"],
+            "types": ["Creature"],
+            "cmc": 3,
+            "mana_cost": "{1}{W}{B}",
+            "deck_colors": {"All Decks": {"gihwr": 62.0}, "WB": {"gihwr": 63.0}},
+        }
+    )
+    pool += _duals("W", "G", 3) + [_off_color_double_pip(global_wr=61.5)]
+
+    deck, splash = build_variant_greedy(pool, ["W", "B"], mock_metrics)
+
+    assert splash == ""
+    assert any(c["name"] == "WB Diluted Pair" for c in deck)
+    assert not any(c["name"] == "GG Bomb" for c in deck)
+
+
+def test_deserving_splash_still_swaps_in(mock_metrics):
+    """Preservation: a splash that beats the 23rd spell even on the deck's own
+    scale still enters the deck."""
+    from src.card_logic import build_variant_greedy
+
+    pool = _wb_spells(23) + _duals("W", "G", 3) + [_off_color_double_pip(global_wr=70.0)]
+
+    deck, splash = build_variant_greedy(pool, ["W", "B"], mock_metrics)
+
+    assert splash == "G"
+    assert any(c["name"] == "GG Bomb" for c in deck)
