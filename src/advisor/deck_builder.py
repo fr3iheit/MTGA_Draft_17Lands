@@ -672,6 +672,43 @@ def _class_probe(seed_deck, pool, identity_colors, target_spells):
     return None
 
 
+def _deck_role_state(deck_cards, pool):
+    """(creature_count, early_count, needs): what the deck fields versus a
+    23-spell deck's targets, capped by what the pool can actually supply."""
+    creature_target, early_target = 13, 8
+
+    def counts(cards):
+        creatures = early = 0
+        for c in cards:
+            if "Land" in c.get("types", []):
+                continue
+            n = c.get("count", 1)
+            if "Creature" in c.get("types", []):
+                creatures += n
+            if get_functional_cmc(c) <= 2:
+                early += n
+        return creatures, early
+
+    pool_c, pool_e = counts(pool)
+    deck_c, deck_e = counts(deck_cards)
+    needs = (
+        max(0, min(creature_target, pool_c) - deck_c),
+        max(0, min(early_target, pool_e) - deck_e),
+    )
+    return deck_c, deck_e, needs
+
+
+def _deck_avg_wr(deck_cards, identity_colors, metrics):
+    spells = [c for c in deck_cards if "Land" not in c.get("types", [])]
+    n = sum(c.get("count", 1) for c in spells)
+    if not n:
+        return 0.0
+    return sum(
+        get_card_rating(c, identity_colors, metrics) * c.get("count", 1)
+        for c in spells
+    ) / n
+
+
 def _search_score(deck_cards, pool_size, metrics):
     """The cycle-2 objective under the candidate's own deterministic seed:
     holistic(identity) + rescaled mana fitness."""
@@ -727,7 +764,7 @@ def hill_climb_search(
     best_per_seed = []
     for seed_idx, seed_deck in enumerate(seed_decks):
         incumbent = seed_deck
-        inc_score, _, _ = _search_score(incumbent, pool_size, metrics)
+        inc_score, _, inc_identity = _search_score(incumbent, pool_size, metrics)
         evals += 1
         exhausted = False
         while not exhausted:
@@ -739,18 +776,36 @@ def hill_climb_search(
                 ):
                     exhausted = True
                     break
-                cand_score, _, _ = _search_score(cand, pool_size, metrics)
+                cand_score, _, cand_identity = _search_score(cand, pool_size, metrics)
                 evals += 1
                 if cand_score > inc_score:
                     eps = _paired_epsilon(incumbent, cand)
                     # A minimum margin beyond the noise estimate: lateral
                     # one-card swaps that clear the noise but carry no real
                     # objective gain churn the deck without improving it.
-                    if cand_score - inc_score > max(eps, 1.5):
-                        incumbent = cand
-                        inc_score = cand_score
-                        accepted = True
-                        break
+                    if cand_score - inc_score <= max(eps, 1.5):
+                        continue
+                    # Independent-counts guard: a swap that lowers the deck's
+                    # average card quality may only be accepted when it fills
+                    # a role the pool is short on (creatures, early plays) —
+                    # mana farming on an already-sound deck is not an
+                    # improvement, whatever the composite says.
+                    quality_ok = _deck_avg_wr(cand, cand_identity, metrics) >= (
+                        _deck_avg_wr(incumbent, inc_identity, metrics) - 1e-9
+                    )
+                    if not quality_ok:
+                        inc_c, inc_e, needs = _deck_role_state(incumbent, pool)
+                        cand_c, cand_e, _ = _deck_role_state(cand, pool)
+                        fills_need = (needs[0] > 0 and cand_c > inc_c) or (
+                            needs[1] > 0 and cand_e > inc_e
+                        )
+                        if not fills_need:
+                            continue
+                    incumbent = cand
+                    inc_score = cand_score
+                    inc_identity = cand_identity
+                    accepted = True
+                    break
             if not accepted:
                 exhausted = True  # neighborhood exhausted (idempotence)
             if progress_callback and evals % 20 == 0:
