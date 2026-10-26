@@ -548,3 +548,47 @@ def test_lookahead_scores_stray_pip_deck_under_identity(mock_metrics):
     stray_calls = [colors for colors, has_stray in captured if has_stray]
     assert stray_calls, "the soup deck must contain and score the gold card"
     assert all(set(colors) == {"G", "B"} for colors in stray_calls)
+
+
+# --- B11: variant diversity is measured over spells, not the 40-card deck ---
+
+
+def _div_variant(label, rating, spells, lands):
+    return (
+        label,
+        {
+            "rating": rating,
+            "deck_cards": spells + lands,
+            "label_prefix": label,
+        },
+    )
+
+
+def test_same_spells_different_basics_is_one_deck():
+    """Two variants with identical 23 spells and a different basic split are
+    duplicates: the second must be dropped (the parent compared all 40 cards,
+    so a 3+-basic difference kept the same deck twice)."""
+    from src.advisor.deck_builder import _diversity_filter
+
+    spells = [
+        {"name": f"Spell {i}", "types": ["Creature"], "count": 1, "colors": ["W"]}
+        for i in range(23)
+    ]
+    lands_a = [{"name": "Plains", "types": ["Land"], "count": 9, "colors": []},
+               {"name": "Island", "types": ["Land"], "count": 8, "colors": []}]
+    lands_b = [{"name": "Plains", "types": ["Land"], "count": 12, "colors": []},
+               {"name": "Island", "types": ["Land"], "count": 5, "colors": []}]
+
+    final_list = [
+        _div_variant("WB Alpha", 90.0, spells, lands_a),
+        _div_variant("WB Beta", 88.0, spells, lands_b),   # same 23 spells, split differs
+        _div_variant("WB Gamma", 85.0, spells[:14] + [
+            {"name": f"Other {i}", "types": ["Creature"], "count": 1, "colors": ["W"]}
+            for i in range(9)
+        ], lands_a),
+    ]
+    kept = _diversity_filter(final_list)
+    kept_labels = [label for label, _ in kept]
+    assert "WB Alpha" in kept_labels
+    assert "WB Beta" not in kept_labels
+    assert "WB Gamma" in kept_labels  # 9 different spells: a genuinely different deck

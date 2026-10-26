@@ -396,6 +396,56 @@ def optimize_deck(base_deck, base_sb, archetype_key, colors):
     return final_deck, final_sb, final_stats, f"Optimized: {best_perm[0]}"
 
 
+def _diversity_filter(final_list, best_safe=None):
+    """Drops near-duplicate variants. Signatures cover the SPELLS only, so two
+    decks with the same 23 spells and any basic split are one deck; a single
+    spell swap is a genuinely different configuration and survives the -50
+    score band."""
+    from src.advisor.deck_scorer import TARGET_SPELL_COUNT
+
+    best_score = final_list[0][1]["rating"] if final_list else 0.0
+    filtered_list, accepted_signatures = [], []
+
+    for label, data in final_list:
+        score, is_top_deck, is_best_safe = (
+            data["rating"],
+            (len(filtered_list) == 0),
+            (best_safe is not None and label == best_safe[0]),
+        )
+        sig = {}
+        for c in data["deck_cards"]:
+            if "Land" not in c.get("types", []):
+                sig[c["name"]] = sig.get(c["name"], 0) + c.get("count", 1)
+
+        max_overlap = 0
+        for acc_sig in accepted_signatures:
+            overlap = sum(
+                min(count, acc_sig.get(name, 0)) for name, count in sig.items()
+            )
+            if overlap > max_overlap:
+                max_overlap = overlap
+
+        spells_diff = TARGET_SPELL_COUNT - max_overlap
+        keep = True if (is_top_deck or is_best_safe) else False
+
+        if not keep:
+            if spells_diff == 0:
+                # Identical spells: only the basic split differs — one deck.
+                keep = False
+            elif spells_diff >= 10:
+                keep = True if score >= best_score - 25.0 else False
+            else:
+                keep = True if score >= best_score - 50.0 else False
+
+        if keep:
+            filtered_list.append((label, data))
+            accepted_signatures.append(sig)
+            if len(filtered_list) >= 10:
+                break
+
+    return filtered_list
+
+
 def suggest_deck(
     taken_cards,
     metrics,
@@ -623,44 +673,7 @@ def suggest_deck(
         safe_idx = select_safe_deck_index(final_list)
         best_safe = final_list[safe_idx] if safe_idx >= 0 else None
 
-        filtered_list, accepted_signatures = [], []
-
-        for label, data in final_list:
-            score, is_top_deck, is_best_safe = (
-                data["rating"],
-                (len(filtered_list) == 0),
-                (best_safe is not None and label == best_safe[0]),
-            )
-            sig = {}
-            for c in data["deck_cards"]:
-                sig[c["name"]] = sig.get(c["name"], 0) + c.get("count", 1)
-
-            max_overlap = 0
-            for acc_sig in accepted_signatures:
-                overlap = sum(
-                    min(count, acc_sig.get(name, 0)) for name, count in sig.items()
-                )
-                if overlap > max_overlap:
-                    max_overlap = overlap
-
-            cards_diff = 40 - max_overlap
-            keep = True if (is_top_deck or is_best_safe) else False
-
-            if not keep:
-                if cards_diff < 3:
-                    keep = False
-                elif cards_diff >= 10:
-                    keep = True if score >= best_score - 25.0 else False
-                else:
-                    keep = True if score >= best_score - 50.0 else False
-
-            if keep:
-                filtered_list.append((label, data))
-                accepted_signatures.append(sig)
-                if len(filtered_list) >= 10:
-                    break
-
-        final_list = filtered_list
+        final_list = _diversity_filter(final_list, best_safe)
         best_safe_idx = select_safe_deck_index(final_list)
 
         if best_safe_idx >= 0:
