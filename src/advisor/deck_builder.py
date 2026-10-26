@@ -714,8 +714,11 @@ def suggest_deck(
         GLOBAL_DECK_CACHE[cache_key] = sorted_decks
 
     except Exception as e:
+        # Internal failures must surface as builder errors, not as the
+        # friendly "not enough playables" empty result: the UI worker's error
+        # branch (and its users) deserve to see the real cause.
         logger.error(f"Deck builder failure: {e}", exc_info=True)
-        return {}
+        raise
 
     return sorted_decks
 

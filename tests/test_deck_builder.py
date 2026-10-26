@@ -592,3 +592,34 @@ def test_same_spells_different_basics_is_one_deck():
     assert "WB Alpha" in kept_labels
     assert "WB Beta" not in kept_labels
     assert "WB Gamma" in kept_labels  # 9 different spells: a genuinely different deck
+
+
+# --- B15: internal builder failures surface as errors, not empty results ---
+
+
+def test_internal_builder_error_raises_instead_of_empty_dict(
+    mock_metrics, sample_pool
+):
+    """A crash inside the builders must reach the UI worker's error branch —
+    the old blanket except converted it into the 'not enough playables'
+    empty result."""
+    from unittest.mock import patch
+
+    import pytest as _pytest
+
+    from src.card_logic import suggest_deck
+    from src.configuration import Configuration
+
+    boom = RuntimeError("boom: injected builder failure")
+    with (
+        patch("src.advisor.deck_builder.build_variant_consistency", side_effect=boom),
+        patch("src.advisor.deck_builder.build_variant_curve", side_effect=boom),
+        patch("src.advisor.deck_builder.build_variant_greedy", side_effect=boom),
+        patch("src.card_logic.build_variant_consistency", side_effect=boom),
+        patch("src.card_logic.build_variant_curve", side_effect=boom),
+        patch("src.card_logic.build_variant_greedy", side_effect=boom),
+    ):
+        with _pytest.raises(RuntimeError):
+            suggest_deck(
+                sample_pool, mock_metrics, Configuration(), event_type="PremierDraft"
+            )
