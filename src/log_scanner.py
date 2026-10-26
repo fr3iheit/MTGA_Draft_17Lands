@@ -1153,6 +1153,25 @@ class ArenaScanner:
             self._metrics_cache = SetMetrics(self.set_data)
             return result
 
+    def try_suggest_snapshot(self):
+        """Single-lock snapshot for the suggest panel: (pool, metrics, event).
+        Returns None when the scanner lock is momentarily held — the caller
+        retries on its next tick, so the Tk thread never blocks on a dataset
+        sync and never reads pool/metrics/event from different moments."""
+        if not self.lock.acquire(blocking=False):
+            return None
+        try:
+            if not hasattr(self, "_metrics_cache") or self._metrics_cache is None:
+                self._metrics_cache = SetMetrics(self.set_data)
+            pool = self.set_data.get_data_by_id(self.taken_cards)
+            event = (
+                (self.draft_sets[0] if self.draft_sets else ""),
+                self.draft_label,
+            )
+            return pool, self._metrics_cache, event
+        finally:
+            self.lock.release()
+
     def retrieve_set_metrics(self):
         with self.lock:
             if not hasattr(self, "_metrics_cache") or self._metrics_cache is None:

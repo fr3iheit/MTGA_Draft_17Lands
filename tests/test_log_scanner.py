@@ -622,3 +622,34 @@ def test_pick_two_format_totals(function_scanner):
     assert function_scanner.total_picks == 45
     assert function_scanner.total_cards == 45
     assert function_scanner.cards_per_pick == 1
+
+
+def test_suggest_snapshot_is_single_lock_and_non_blocking(function_scanner):
+    """try_suggest_snapshot returns None while the scanner lock is held (the
+    panel retries instead of blocking the Tk thread) and a consistent
+    (pool, metrics, event) triple when free."""
+    import threading
+
+    snapshot = function_scanner.try_suggest_snapshot()
+    assert snapshot is not None
+    pool, metrics, event = snapshot
+    assert isinstance(pool, list)
+    assert metrics is not None
+    assert isinstance(event, tuple) and len(event) == 2
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with function_scanner.lock:
+            held.set()
+            release.wait(timeout=5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    try:
+        held.wait(timeout=5)
+        assert function_scanner.try_suggest_snapshot() is None
+    finally:
+        release.set()
+        t.join(timeout=5)
