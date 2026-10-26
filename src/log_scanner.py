@@ -993,8 +993,27 @@ class ArenaScanner:
                     else str(picked).split(",")
                 )
                 if len(picked_list) > len(self.taken_cards):
-                    self.taken_cards = picked_list
-                    self.picked_cards[0] = self.taken_cards
+                    # The blob is the authoritative cumulative list: import a copy
+                    # under the lock and advance the pick watermarks so a late or
+                    # replayed pick event cannot re-import its cards as duplicates.
+                    with self.lock:
+                        self.taken_cards = list(picked_list)
+                        self.picked_cards[0] = list(picked_list)
+                        # PickNext status: "next pick is `pick`" — the blob covers
+                        # picks 1..pick-1. Advance the watermarks to that coverage
+                        # so a late or replayed echo of an already-covered pick
+                        # cannot re-import its cards as duplicates, while the echo
+                        # of pick `pick` itself still lands.
+                        covered = pick - 1
+                        if covered >= 1 and (
+                            pack > self.previous_picked_pack
+                            or (
+                                pack == self.previous_picked_pack
+                                and covered > self.current_picked_pick
+                            )
+                        ):
+                            self.previous_picked_pack = pack
+                            self.current_picked_pick = covered
                     changed = True
             return changed
 

@@ -573,3 +573,35 @@ def test_bot_draft_event_name_reads_pack_and_pick(function_scanner):
     assert function_scanner.draft_data_search()
     assert function_scanner.retrieve_current_pack_and_pick() == (1, 2)
     assert function_scanner.taken_cards == ["106259"]
+
+
+def test_quick_pickedcards_sync_survives_late_pick_echo(function_scanner):
+    """The Quick-draft PickedCards sync imports the authoritative taken-cards list,
+    so a later replayed pick event must not re-import its cards as duplicates, and
+    picked_cards[0] must be a copy, not an alias of taken_cards."""
+    from collections import Counter
+
+    def append(*lines):
+        with open(TEST_LOG_FILE_LOCATION, "a", encoding="utf-8") as log_file:
+            log_file.write("\n".join(lines) + "\n")
+
+    append(FRA_BOT_DRAFT_EVENT)
+    assert function_scanner.draft_start_search()
+
+    append(FRA_BOT_DRAFT_STATUS_P1P1)
+    assert function_scanner.draft_data_search()
+
+    # Status echo carrying the cumulative PickedCards blob: the sync imports it
+    append(FRA_BOT_DRAFT_STATUS_P1P2)
+    assert function_scanner.draft_data_search()
+    assert function_scanner.taken_cards == ["106259"]
+    assert function_scanner.picked_cards[0] is not function_scanner.taken_cards
+
+    # A late/replayed pick echo for the card the sync already imported (pack 1, pick 1)
+    append(
+        r'[UnityCrossThreadLogger]==> BotDraftDraftPick {"id":"8b1d5a11-0000-4000-8000-000000000001","request":"{\"EventName\":\"Y26_FRA_Bot_Draft_20261017\",\"PickInfo\":{\"EventName\":\"Y26_FRA_Bot_Draft_20261017\",\"CardIds\":[\"106259\"],\"PackNumber\":0,\"PickNumber\":0}}"}'
+    )
+    function_scanner.draft_data_search()
+
+    counts = Counter(function_scanner.taken_cards)
+    assert counts["106259"] == 1
