@@ -36,6 +36,55 @@ import os as _os
 _PRIOR_MODELS = {}  # lazy: {"full": (predict_fn, manifest), "nr": (predict_fn, manifest)}
 _PRIOR_LOAD_TRIED = False
 
+# v2: per-card prior z precomputed offline by the evaluated v5 level-1 model
+# (spearman 0.665 FRA / 0.615 DFT on sets frozen out of training). The app
+# only looks names up — no model code runs here, so predictions are exactly
+# the evaluated ones. Cards outside the table keep the v1 path below, and
+# everything falls back to the set mean.
+_PRIOR_Z_TABLE = {}
+_PRIOR_Z_TABLE_TRIED = False
+
+
+def _norm_card_name(s):
+    import re as _re
+
+    return _re.sub(r"\s+", " ", (s or "").lower().replace("’", "'")).strip()
+
+
+def _load_prior_z_table():
+    global _PRIOR_Z_TABLE_TRIED
+    if _PRIOR_Z_TABLE_TRIED:
+        return
+    _PRIOR_Z_TABLE_TRIED = True
+    try:
+        import numpy as _np
+
+        base = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
+            _os.path.abspath(__file__)))), "assets", "models")
+        data = _np.load(_os.path.join(base, "card_prior_z_table.npz"),
+                        allow_pickle=False)
+        for nm, zv in zip(data["names"], data["z"]):
+            _PRIOR_Z_TABLE[_norm_card_name(str(nm))] = float(zv)
+        # face -> full-name index for split/DFC cards ("ice" -> "fire // ice");
+        # exact names always win (a card genuinely named "Fire" keeps its z)
+        for nm in list(_PRIOR_Z_TABLE):
+            if " // " in nm:
+                for part in nm.split(" // "):
+                    _PRIOR_Z_TABLE.setdefault(part, _PRIOR_Z_TABLE[nm])
+    except Exception:
+        pass  # atomic fallback: v1 path, then the set mean
+
+
+def _table_prior_z(card):
+    """Table z for a card dict, or None. Exact (normalized) name first; the
+    loader's face index resolves single-face names of split cards."""
+    if not _PRIOR_Z_TABLE:
+        return None
+    name = card.get("name") if isinstance(card, dict) else None
+    if not name:
+        return None
+    return _PRIOR_Z_TABLE.get(_norm_card_name(str(name)))
+
 
 def _load_card_prior():
     global _PRIOR_LOAD_TRIED
@@ -85,8 +134,13 @@ def _make_predictor(dump, feat_names):
 
 def _feature_prior_z(card, use_nr=False):
     """Predicted z of the card's GIH WR from rules features; 0.0 (set mean) on
-    any failure. Features come from the card's deck_colors-adjacent fields the
-    extractor produced; for live cards we use the static fields the app has."""
+    any failure. The v2 table (exact offline predictions by the evaluated v5
+    model) wins when it has the card; otherwise the v1 live-extractor path
+    runs below."""
+    _load_prior_z_table()
+    tz = _table_prior_z(card)
+    if tz is not None:
+        return max(-2.0, min(2.0, tz))
     _load_card_prior()
     kind = "nr" if use_nr else "full"
     if kind not in _PRIOR_MODELS:
