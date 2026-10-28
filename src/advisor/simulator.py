@@ -106,8 +106,24 @@ def _parse_deck_to_arrays(deck_list):
         is_filter = re.search(
             r"\b(?:exchange|convert)\b", text
         ) is not None and "add" not in text
+        # 0-CMC colored artifacts (Moxen) ARE independent mana sources.
+        # 17Lands datasets carry no oracle_text, so detect structurally:
+        # cmc=0 + Artifact + has colors is a Mox-like card. Without
+        # oracle_text, the mana color falls back to the card's own colors.
+        is_zero_cost_mana = (
+            not is_land[i]
+            and not is_filter
+            and c.get("cmc", 0) == 0
+            and "Artifact" in types
+            and c.get("colors")
+        )
         is_ramp[i] = (
-            ("fixing_ramp" in tags or any_color or "treasure" in text)
+            (
+                "fixing_ramp" in tags
+                or any_color
+                or "treasure" in text
+                or is_zero_cost_mana
+            )
             and not is_land[i]
             and not is_filter
         )
