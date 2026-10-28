@@ -514,7 +514,9 @@ def _mc_simulation(deck_cards, iterations, seed=None):
     # expanded card copies, not unique rows)
     copies = []
     for c in deck_cards:
-        copies.extend([c] * int(c.get("count", 1)))
+        # count=1 per copy: simulate_deck re-expands rows by count, so a
+        # raw row here would multiply (9 Islands -> 81 copies)
+        copies.extend([dict(c, count=1)] * int(c.get("count", 1)))
     order = sorted(range(len(per_card)), key=lambda i: per_card[i])
     canonical = [copies[i] for i in order]
     profile_seed = zlib.crc32(str(key[0]).encode("utf-8")) % (2 ** 31)
