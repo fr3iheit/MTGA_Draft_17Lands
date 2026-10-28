@@ -1,69 +1,11 @@
 {
- "schema": "card_prior_z_table_v1",
- "model": "card_prior_v5_full_level1.txt",
- "model_job": "integrate-v4",
- "metrics": {
-  "FRA": {
-   "n_eval": 218,
-   "spearman": 0.6648,
-   "spearman_ci95": [
-    0.5668,
-    0.7503
-   ],
-   "rmse_weighted": 1.214,
-   "rmse_baseline_setmean_z0": 1.6089,
-   "top50_overlap": 0.6,
-   "bottom50_overlap": 0.54,
-   "overlap_k": 50,
-   "mean_predicted_z": 0.0165,
-   "mean_actual_z": -0.1601
-  },
-  "DFT": {
-   "n_eval": 253,
-   "spearman": 0.6149,
-   "spearman_ci95": [
-    0.5209,
-    0.6975
-   ],
-   "rmse_weighted": 1.1778,
-   "rmse_baseline_setmean_z0": 1.5344,
-   "top50_overlap": 0.54,
-   "bottom50_overlap": 0.52,
-   "overlap_k": 50,
-   "mean_predicted_z": -0.2893,
-   "mean_actual_z": -0.2534
-  }
- },
+ "schema": "card_prior_z_table_v2",
+ "base": "card_prior_v5_full level-1 (spearman .6648 FRA / .6149 DFT)",
+ "override": "absolute structural floors (forge v2 signals; mana/draw/turn/tutor economics, calibrated Jitte z=5.44 TMT / Wurmcoil z=3.96 BRO)",
  "n_cards": 38542,
+ "n_lifted": 28,
  "z_clamps": [
-  -2.0,
-  2.0
- ],
- "features": 259,
- "refs_top": [
-  "Jeskai Revelation",
-  "Aurelia's Vindicator",
-  "Dragonback Assault",
-  "Marang River Regent // Coil and Catch",
-  "Overlord of the Mistmoors",
-  "Roar of Endless Song",
-  "Valgavoth's Onslaught",
-  "Season of Loss",
-  "Sage of the Skies",
-  "Sword of Fire and Ice"
- ],
- "refs_bot": [
-  "Case of the Ransacked Lab",
-  "United Battlefront",
-  "Marina Vendrell's Grimoire",
-  "Thousand-Year Storm",
-  "Undergrowth Recon",
-  "Sylvan Tutor",
-  "Bishop of the Bloodstained",
-  "Doubling Season",
-  "Dazzling Theater // Prop Room",
-  "Noxious Revival"
- ],
- "fallback": "set mean (v1 live extractor path remains below this)",
- "notes": "per-card prior z precomputed by the evaluated booster; app does dict lookup only"
+  -5.5,
+  5.5
+ ]
 }

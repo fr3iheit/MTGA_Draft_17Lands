@@ -43,6 +43,7 @@ _PRIOR_LOAD_TRIED = False
 # everything falls back to the set mean.
 _PRIOR_Z_TABLE = {}
 _PRIOR_Z_TABLE_TRIED = False
+_PRIOR_Z_CLAMPS = (-2.0, 2.0)  # widened at load from the manifest (floors reach z 5.0)
 
 
 def _norm_card_name(s):
@@ -61,16 +62,26 @@ def _load_prior_z_table():
 
         base = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
             _os.path.abspath(__file__)))), "assets", "models")
+        # manifest FIRST: a missing/malformed manifest must abort the whole
+        # table load (otherwise floors would be silently clamped to +-2)
+        cl = _json.load(open(_os.path.join(base,
+            "card_prior_z_table_manifest.json"))).get("z_clamps")
+        if not (isinstance(cl, list) and len(cl) == 2
+                and float(cl[0]) < 0 < float(cl[1])):
+            raise ValueError("bad z_clamps in manifest")
         data = _np.load(_os.path.join(base, "card_prior_z_table.npz"),
                         allow_pickle=False)
-        for nm, zv in zip(data["names"], data["z"]):
-            _PRIOR_Z_TABLE[_norm_card_name(str(nm))] = float(zv)
+        table = {_norm_card_name(str(nm)): float(zv)
+                 for nm, zv in zip(data["names"], data["z"])}
         # face -> full-name index for split/DFC cards ("ice" -> "fire // ice");
         # exact names always win (a card genuinely named "Fire" keeps its z)
-        for nm in list(_PRIOR_Z_TABLE):
+        for nm in list(table):
             if " // " in nm:
                 for part in nm.split(" // "):
-                    _PRIOR_Z_TABLE.setdefault(part, _PRIOR_Z_TABLE[nm])
+                    table.setdefault(part, table[nm])
+        global _PRIOR_Z_CLAMPS
+        _PRIOR_Z_CLAMPS = (float(cl[0]), float(cl[1]))
+        _PRIOR_Z_TABLE.update(table)   # published only after everything parsed
     except Exception:
         pass  # atomic fallback: v1 path, then the set mean
 
@@ -140,7 +151,8 @@ def _feature_prior_z(card, use_nr=False):
     _load_prior_z_table()
     tz = _table_prior_z(card)
     if tz is not None:
-        return max(-2.0, min(2.0, tz))
+        lo, hi = _PRIOR_Z_CLAMPS
+        return max(lo, min(hi, tz))
     _load_card_prior()
     kind = "nr" if use_nr else "full"
     if kind not in _PRIOR_MODELS:

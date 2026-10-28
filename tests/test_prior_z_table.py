@@ -29,8 +29,27 @@ def test_frozen_witnesses():
     assert abs(_ds._PRIOR_Z_TABLE["fire // ice"] - (-0.3320)) < 1e-3
 
 
+def test_power_floor_witnesses():
+    # v2: absolute structural floors lift out-of-distribution power cards
+    # (forge v2 signals; calibrated on Jitte z=+5.44 TMT / Wurmcoil +3.96 BRO)
+    _ds._load_prior_z_table()
+    assert _ds._PRIOR_Z_TABLE["black lotus"] == 5.0
+    assert _ds._PRIOR_Z_TABLE["sol ring"] == 4.0
+    assert _ds._PRIOR_Z_TABLE["mox sapphire"] == 4.0
+    assert _ds._PRIOR_Z_TABLE["ancestral recall"] == 4.5
+    assert _ds._PRIOR_Z_TABLE["demonic tutor"] == 3.0
+    # in-distribution cards keep the v5 statistical value (not the floor)
+    assert _ds._PRIOR_Z_TABLE["ajani unrelenting"] == 2.0
+
+
 def test_feature_prior_z_uses_table():
     assert abs(_ds._feature_prior_z({"name": "Grizzly Bears"}) - (-0.715)) < 1e-3
+
+
+def test_clamp_follows_manifest():
+    # z=5.0 must survive the clamp (manifest widens to +-5.5 for floors)
+    assert _ds._feature_prior_z({"name": "Black Lotus"}) == 5.0
+    assert _ds._PRIOR_Z_CLAMPS == (-5.5, 5.5)
     # name normalization and curly apostrophes hit the same row
     direct = _ds._feature_prior_z({"name": "Aurelia's Vindicator"})
     curly = _ds._feature_prior_z({"name": "AURELIA’S VINDICATOR"})
