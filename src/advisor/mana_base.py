@@ -230,6 +230,7 @@ class ManaSourceAnalyzer:
     def __init__(self, pool):
         self.pool = pool
         self.sources = {c: 0 for c in constants.CARD_COLORS}
+        self.colorless_sources = 0
         # Lands that produce any color are dependable sources; spells that fix
         # (Treasure makers, dorks) are transient and must be discounted by the
         # mana base math.
@@ -310,6 +311,9 @@ class ManaSourceAnalyzer:
                     self.any_color_enabler_pips[c] += count
             return
 
+        if "add {c}" in text or "adds {c}" in text or "add {c}{c}" in text:
+            self.colorless_sources += count
+
         if is_land and "Basic" not in types:
             if not card_colors and "fixing_ramp" in tags and not specific_match_found:
                 self.any_color_land_sources += count
@@ -324,10 +328,12 @@ class ManaSourceAnalyzer:
 
 def count_fixing(pool):
     analyzer = ManaSourceAnalyzer(pool)
-    return {
+    result = {
         c: analyzer.sources[c] + analyzer.any_color_sources
         for c in constants.CARD_COLORS
     }
+    result["C"] = analyzer.colorless_sources
+    return result
 
 
 def get_strict_colors(spells):

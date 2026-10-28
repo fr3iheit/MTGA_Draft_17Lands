@@ -582,17 +582,26 @@ class DraftAdvisor:
         card_colors = card.get("colors", [])
         top_2_lane = self.main_colors[:2]
 
+        off_color_pips = 0
+        required_colorless = 0
         if mana_cost:
-            off_color_pips = 0
             is_on_lane = True
             pips = re.findall(r"\{(.*?)\}", mana_cost)
             for pip in pips:
-                options = [c for c in pip.split("/") if c in "WUBRG"]
-                if not options:
+                if "/" in pip:
+                    # Hybrid ({2/W}) and phyrexian ({B/P}) pips are flexible:
+                    # payable with the alternate option (generic or life),
+                    # never a hard off-color blocker.
+                    options = [c for c in pip.split("/") if c in "WUBRG"]
+                    if options and any(opt in top_2_lane for opt in options):
+                        continue
+                    continue  # flexible payment — not a mandatory pip
+                if pip == "C":
+                    required_colorless += 1
                     continue
-                if any(opt in top_2_lane for opt in options):
-                    continue
-                else:
+                if pip in "WUBRG":
+                    if pip in top_2_lane:
+                        continue
                     off_color_pips += 1
                     is_on_lane = False
         else:
@@ -610,6 +619,13 @@ class DraftAdvisor:
                 if len(card_colors) > 1 and off_color_pips > 0
                 else (max(0.4, pressure), "Off-Color")
             )
+
+        if required_colorless > 0:
+            colorless_sources = self.fixing_map.get("C", 0)
+            if colorless_sources < required_colorless:
+                # {C} must be paid with colorless mana specifically; basic
+                # lands produce their color, not colorless.
+                return 0.15, "Colorless Requirement"
 
         if not is_on_lane:
             if (
@@ -649,7 +665,13 @@ class DraftAdvisor:
                     and get_functional_cmc(card) >= 5
                     and z_score >= self.BOMB_Z_SCORE
                 ):
-                    if self.pool_metrics["fixing_count"] >= 4:
+                    # Same color-specific conjunction as the single-pip
+                    # branch: generic fixing_count alone must not unlock a
+                    # double-pip splash with zero sources of that color.
+                    if (
+                        has_specific_fixing
+                        and self.pool_metrics["fixing_count"] >= 4
+                    ):
                         return 0.30, "Greedy Bomb Splash"
 
             if off_color_pips == 1 and has_specific_fixing:

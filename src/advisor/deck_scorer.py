@@ -225,7 +225,10 @@ def _extract_live_features(card):
     f["power_ge_3"] = 0; f["statline_at_curve"] = 0
 
     # top effect flags (oracle text regex, matching the extractor's patterns)
-    f["fx_draw_count"] = min(len(_re.findall(r"draw (?:one|two|three|four|\d+)", text)), 3)
+    # the shipped models' feature schema calls this 'draw_count' (not
+    # fx_draw_count — that mismatch made every live-extracted draw feature
+    # invisible to the v1 predictor, defaulting to zero)
+    f["draw_count"] = min(len(_re.findall(r"draw (?:one|two|three|four|\d+)", text)), 3)
     f["fx_counter_hard"] = 1 if _re.search(r"counter target (?:spell|noncreature)", text) else 0
     f["fx_destroy_creature"] = 1 if _re.search(r"destroy target (?:creature|creature or)", text) else 0
     f["fx_exile_creature"] = 1 if _re.search(r"exile target (?:creature|permanent)", text) else 0
@@ -533,7 +536,7 @@ def calculate_holistic_score(deck, colors, pool_size, metrics, tier_data=None):
     ratings = []
     for c in spells:
         for _ in range(c.get("count", 1)):
-            rating = get_card_rating(c, colors, metrics)
+            rating = get_card_rating(c, colors, metrics, tier_data=tier_data)
             ratings.append(rating if rating > 0.0 else replacement_level)
 
     avg_gihwr = (

@@ -1162,7 +1162,7 @@ def suggest_deck(
                 simulated_cache[sim_key] = opt_stats
 
             score, breakdown = calculate_holistic_score(
-                opt_deck, identity_colors, pool_size, metrics
+                opt_deck, identity_colors, pool_size, metrics, tier_data
             )
             if opt_stats:
                 # One MC objective, rescaled (see MC_FITNESS_WEIGHT): the
@@ -1212,7 +1212,7 @@ def suggest_deck(
             if progress_callback:
                 progress_callback({"status": f"Analyzing {arch_key} Archetypes..."})
 
-            con_deck = build_variant_consistency(taken_cards, main_colors, metrics)
+            con_deck = build_variant_consistency(taken_cards, main_colors, metrics, tier_data)
             process_variant(
                 "Consistent",
                 con_deck,
@@ -1233,7 +1233,7 @@ def suggest_deck(
                     arch_key,
                 )
 
-            tempo_deck = build_variant_curve(taken_cards, main_colors, metrics)
+            tempo_deck = build_variant_curve(taken_cards, main_colors, metrics, tier_data)
             process_variant(
                 "Tempo",
                 tempo_deck,
@@ -1348,7 +1348,7 @@ def suggest_deck(
                 redeck, iterations=MC_ITERATIONS, seed=_deck_seed(deck_sig_d)
             )
             score_d, breakdown_d = calculate_holistic_score(
-                redeck, identity_d, pool_size, metrics
+                redeck, identity_d, pool_size, metrics, tier_data
             )
             if stats_d:
                 score_d += MC_FITNESS_WEIGHT * _mana_fitness(stats_d)
@@ -1490,12 +1490,16 @@ def suggest_deck(
 
 
 def build_variant_consistency(pool, colors, metrics, tier_data=None):
+    _tier = tier_data  # forwarded to every rating below (RP1)
     candidates = [
         c
         for c in pool
         if is_castable(c, colors, strict=True) and "Land" not in c.get("types", [])
     ]
-    candidates.sort(key=lambda x: get_card_rating(x, colors, metrics), reverse=True)
+    candidates.sort(
+        key=lambda x: get_card_rating(x, colors, metrics, tier_data=tier_data),
+        reverse=True,
+    )
     spells, non_basic_lands = (
         candidates[:23],
         select_useful_lands(pool, colors, metrics),
@@ -1590,7 +1594,7 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
             ):
                 continue
 
-        rating = get_card_rating(card, ["All Decks"], metrics)
+        rating = get_card_rating(card, ["All Decks"], metrics, tier_data=tier_data)
         if rating > best_rating and fixing_sources.get(splash_col, 0) >= 1:
             splash_candidates.append((card, splash_col, rating))
 
@@ -1606,7 +1610,10 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
         for c in pool
         if is_castable(c, colors, strict=True) and "Land" not in c.get("types", [])
     ]
-    main_spells.sort(key=lambda x: get_card_rating(x, colors, metrics), reverse=True)
+    main_spells.sort(
+        key=lambda x: get_card_rating(x, colors, metrics, tier_data=tier_data),
+        reverse=True,
+    )
 
     # A splash is 2-3 cards depending on fixing, not a third color pillar.
     # Filling thin main colors with unlimited splash cards produced "splash"
@@ -1629,8 +1636,10 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
         # unconditionally, cutting a pair-proven on-color spell for a splash
         # that had only cleared an absolute floor.
         best_splash = valid_splashes[0]
-        if get_card_rating(best_splash, colors, metrics) > get_card_rating(
-            main_spells[22], colors, metrics
+        if get_card_rating(
+            best_splash, colors, metrics, tier_data=tier_data
+        ) > get_card_rating(
+            main_spells[22], colors, metrics, tier_data=tier_data
         ):
             deck_spells = main_spells[:22] + [best_splash]
             splash_in_deck = True
@@ -1659,6 +1668,7 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
 
 
 def build_variant_curve(pool, colors, metrics, tier_data=None):
+    _tier = tier_data  # forwarded to every rating below (RP1)
     candidates = [
         c
         for c in pool
@@ -1666,7 +1676,7 @@ def build_variant_curve(pool, colors, metrics, tier_data=None):
     ]
 
     def tempo_rating(card):
-        base, cmc = get_card_rating(card, colors, metrics), get_functional_cmc(card)
+        base, cmc = get_card_rating(card, colors, metrics, tier_data=tier_data), get_functional_cmc(card)
         if cmc <= 2:
             return base + 4.0
         if cmc >= 5:
