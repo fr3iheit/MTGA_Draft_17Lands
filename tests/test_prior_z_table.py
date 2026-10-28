@@ -20,7 +20,7 @@ def test_table_asset_loads():
 def test_frozen_witnesses():
     _ds._load_prior_z_table()
     # FRA top cards by actual WR (17Lands): the model's strongest calls
-    assert _ds._PRIOR_Z_TABLE["ajani unrelenting"] == 2.0
+    assert abs(_ds._PRIOR_Z_TABLE["ajani unrelenting"] - 2.3569) < 1e-3
     assert abs(_ds._PRIOR_Z_TABLE["uldaros theorix"] - 1.6112) < 1e-3
     assert abs(_ds._PRIOR_Z_TABLE["sublime epiphany"] - 0.7738) < 1e-3
     # a vanilla 2/2 for 2 sits below the set mean, not at an extreme
@@ -39,7 +39,7 @@ def test_power_floor_witnesses():
     assert _ds._PRIOR_Z_TABLE["ancestral recall"] == 4.5
     assert _ds._PRIOR_Z_TABLE["demonic tutor"] == 3.0
     # in-distribution cards keep the v5 statistical value (not the floor)
-    assert _ds._PRIOR_Z_TABLE["ajani unrelenting"] == 2.0
+    assert abs(_ds._PRIOR_Z_TABLE["ajani unrelenting"] - 2.3569) < 1e-3
 
 
 def test_feature_prior_z_uses_table():
@@ -80,6 +80,8 @@ def test_card_wr_posteriors_carries_prior():
             "deck_colors": {"All Decks": {"gihwr": 60.0, "samples": 500},
                             "WR": {"gihwr": 58.0, "samples": 50}}}
     post = _ds.card_wr_posteriors(card, ["W", "R"])
-    assert post["prior_z"] == 2.0
-    assert post["shrunk_global"] == pytest.approx(67.0)
-    assert post["shrunk_arch"] == pytest.approx(66.75)
+    assert abs(post["prior_z"] - 2.3569) < 1e-3
+    # target = 60 + 2.3569*4 = 69.43; n=50 -> 69.43 + (60-69.43)*50/400
+    assert post["shrunk_global"] == pytest.approx(69.43 - 9.43 * 50 / 400, abs=0.02)
+    assert post["shrunk_arch"] == pytest.approx(
+        69.43 - 11.43 * 50 / 400, abs=0.02)

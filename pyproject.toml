@@ -35,3 +35,8 @@ zipp = "*"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: slower end-to-end checks (asset integrity, cross-process determinism)",
+]
