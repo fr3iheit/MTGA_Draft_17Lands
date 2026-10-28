@@ -99,9 +99,18 @@ def _parse_deck_to_arrays(deck_list):
         any_color = re.search(r"\bany (?:one |combination of )?colors?\b", text) is not None
 
         is_land[i] = "Land" in types
+        # Mana FILTERS (Prophetic Prism, Chromatic Star etc.) exchange or
+        # convert existing mana — they do not add an independent source.
+        # Treating them as ramp manufactured mana out of nothing (a
+        # two-land hand could cast a 3-drop through a Prism).
+        is_filter = re.search(
+            r"\b(?:exchange|convert)\b", text
+        ) is not None and "add" not in text
         is_ramp[i] = (
-            "fixing_ramp" in tags or any_color or "treasure" in text
-        ) and not is_land[i]
+            ("fixing_ramp" in tags or any_color or "treasure" in text)
+            and not is_land[i]
+            and not is_filter
+        )
         is_removal[i] = "removal" in tags
 
         # Calculate produced mana bitmask

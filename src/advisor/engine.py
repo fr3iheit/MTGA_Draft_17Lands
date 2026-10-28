@@ -12,9 +12,8 @@ import re
 from typing import List, Dict, Any, Tuple
 from src.advisor.schema import Recommendation
 from src import constants
-from src.advisor.deck_scorer import SHRINKAGE_K, _table_prior_z
 from src.card_utils import get_functional_cmc
-from src.advisor.deck_scorer import SHRINKAGE_K, _table_prior_z
+from src.advisor.deck_scorer import SHRINKAGE_K, _table_prior_z, _load_prior_z_table
 
 # (pool_signature, card_name) -> improvement bonus for the pack-3 lookahead:
 # the same pool + candidate card recurs every UI refresh, and the heuristic
@@ -50,6 +49,11 @@ class DraftAdvisor:
         self.metrics = set_metrics
         self.pool = taken_cards or []
         self.signals = signals or {}
+
+        # Initialize the prior table eagerly: the cold-start picker path
+        # calls _table_prior_z before any posterior helper would warm the
+        # lazy loader (fresh-session day-one picks had no prior at all).
+        _load_prior_z_table()
 
         # Draft progress captured from the controller's locked scanner snapshot:
         # picks (1-based, already normalized by cards_per_pick), total_picks,
@@ -589,13 +593,21 @@ class DraftAdvisor:
             pips = re.findall(r"\{(.*?)\}", mana_cost)
             for pip in pips:
                 if "/" in pip:
-                    # Hybrid ({2/W}) and phyrexian ({B/P}) pips are flexible:
-                    # payable with the alternate option (generic or life),
-                    # never a hard off-color blocker.
+                    # Hybrid and phyrexian pips are flexible payments, but
+                    # only when the alternate option is actually payable:
+                    # {2/W} and {B/P} have generic/life alternates (flexible);
+                    # {U/B} — purely colored — is a hard off-color pip when
+                    # neither color is in the lane.
                     options = [c for c in pip.split("/") if c in "WUBRG"]
+                    has_noncolor_alt = any(
+                        c not in "WUBRG" for c in pip.split("/")
+                    )
                     if options and any(opt in top_2_lane for opt in options):
                         continue
-                    continue  # flexible payment — not a mandatory pip
+                    if has_noncolor_alt:
+                        continue  # generic/life payment available
+                    off_color_pips += 1
+                    is_on_lane = False
                 if pip == "C":
                     required_colorless += 1
                     continue

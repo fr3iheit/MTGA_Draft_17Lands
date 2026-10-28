@@ -466,8 +466,17 @@ def identify_top_pairs(pool, metrics, tier_data=None):
         wr = get_card_rating(card, ["All Decks"], metrics, tier_data)
         # Raw-WR gate, shrunk weight: shrinkage pulls small-n cards toward the
         # mean, so gating on the shrunk value would let low-sample noise cross
-        # the playable baseline and steer pair selection.
-        if raw_wr > playable_baseline:
+        # the playable baseline and steer pair selection. On a COLD set
+        # (no observed data), the prior-based rating IS the gate — every
+        # raw WR is zero and the raw gate would return no lanes at all,
+        # collapsing every suggestion to five-color soup.
+        set_has_data_for_lanes = any(
+            float(c.get("deck_colors", {}).get("All Decks", {}).get("gihwr") or 0.0)
+            > 30.0
+            for c in pool
+        )
+        gate_value = raw_wr if set_has_data_for_lanes else wr
+        if gate_value > playable_baseline:
             points = (wr - playable_baseline) / global_std
             for c in colors:
                 # Multicolor cards credit every color they can be played in,
