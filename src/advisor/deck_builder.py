@@ -853,6 +853,9 @@ def beam_search(
         seed_score, _, _ = _search_score(seed_deck, pool_size, metrics)
         evals += 1
         best_deck, best_score = seed_deck, seed_score
+        # anchor the beam to the seed's identity (archetype-anchored search,
+        # same rationale as the hill climb)
+        beam_identity = deck_color_identity(seed_deck)
 
         beam = [(seed_score, _canonical_key(seed_deck), seed_deck)]
         seen = {_canonical_key(seed_deck)}
@@ -861,7 +864,7 @@ def beam_search(
             improved = False
             candidates = []
             for score, _key, deck in beam:
-                for cand in search_neighbors(deck, pool, deck_color_identity(deck)):
+                for cand in search_neighbors(deck, pool, beam_identity):
                     if evals >= max_evals:
                         break
                     ck = _canonical_key(cand)
@@ -913,11 +916,16 @@ def hill_climb_search(
     best_per_seed = []
     for seed_idx, seed_deck in enumerate(seed_decks):
         incumbent = seed_deck
+        # The climb is anchored to the SEED's color identity: recomputing it
+        # from the incumbent let the search drift archetype step by step
+        # (a UB control variant ending as a WUBR soup) once cards were priced
+        # under their own best pair. Each variant explores within itself.
+        seed_identity = deck_color_identity(seed_deck)
         inc_score, _, inc_identity = _search_score(incumbent, pool_size, metrics)
         evals += 1
         exhausted = False
         while not exhausted:
-            neighbors = list(search_neighbors(incumbent, pool, deck_color_identity(incumbent)))
+            neighbors = list(search_neighbors(incumbent, pool, seed_identity))
             accepted = False
             for cand in neighbors:
                 if evals >= budgets:
@@ -1352,8 +1360,19 @@ def suggest_deck(
                 )
                 for _, data in final_list
             }
+            # Probe seed: the top variant, but when a coherent (<=3 color)
+            # build is within noise of the top, prefer it — a spell-count
+            # probe anchored to a 5-color soup drifts the suggestion away
+            # from the archetype the user is looking at.
             top_seed = final_list[0][1]["deck_cards"] if final_list else None
             if top_seed is not None:
+                if len(deck_color_identity(top_seed)) > 3:
+                    top_rating = final_list[0][1].get("rating", 0.0)
+                    for _, cand_data in final_list[1:]:
+                        if len(cand_data.get("identity_colors", [])) <= 3 and \
+                                top_rating - cand_data.get("rating", 0.0) <= 1.5:
+                            top_seed = cand_data["deck_cards"]
+                            break
                 top_identity = deck_color_identity(top_seed)
                 for target in (22, 24):
                     if target in present_classes:
