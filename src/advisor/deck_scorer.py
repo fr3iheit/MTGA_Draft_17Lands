@@ -64,13 +64,17 @@ def _load_prior_z_table():
             _os.path.abspath(__file__)))), "assets", "models")
         # manifest FIRST: a missing/malformed manifest must abort the whole
         # table load (otherwise floors would be silently clamped to +-2)
-        cl = _json.load(open(_os.path.join(base,
-            "card_prior_z_table_manifest.json"))).get("z_clamps")
+        mf = _json.load(open(_os.path.join(base,
+            "card_prior_z_table_manifest.json")))
+        cl = mf.get("z_clamps")
         if not (isinstance(cl, list) and len(cl) == 2
                 and float(cl[0]) < 0 < float(cl[1])):
             raise ValueError("bad z_clamps in manifest")
         data = _np.load(_os.path.join(base, "card_prior_z_table.npz"),
                         allow_pickle=False)
+        n_rows = len(data["names"])
+        if len(data["z"]) != n_rows or n_rows != int(mf.get("n_cards", -1)):
+            raise ValueError("prior table rows disagree with the manifest")
         table = {_norm_card_name(str(nm)): float(zv)
                  for nm, zv in zip(data["names"], data["z"])}
         # face -> full-name index for split/DFC cards ("ice" -> "fire // ice");
@@ -271,11 +275,16 @@ def effective_pair_key(card, colors):
 def card_wr_posteriors(card, colors, metrics=None):
     """Posterior win-rate estimates for `card` under `colors`, WR scale only —
     callers apply their own transforms. Returns a dict with raw values, the
-    game-count n, and the shrunk estimates. Shrinkage only applies for n > 0;
-    n comes from `samples` (ever_drawn_game_count; absent on shipped fixtures,
-    where every card therefore keeps today's raw-value behavior)."""
+    game counts, and the shrunk estimates. The GLOBAL posterior shrinks with
+    the global game count and the ARCH posterior with the pair's count; when
+    the pair has no data the arch posterior falls back to the global
+    evidence instead of returning an unshrunk raw rate. Shrinkage only
+    applies for n > 0 (n from `samples` / ever_drawn_game_count; absent on
+    shipped fixtures, where every card therefore keeps raw-value behavior)."""
     stats = card.get("deck_colors", {})
-    global_wr = float(stats.get("All Decks", {}).get("gihwr") or 0.0)
+    global_stats = stats.get("All Decks", {})
+    global_wr = float(global_stats.get("gihwr") or 0.0)
+    n_global = int(global_stats.get("samples", 0) or 0)
     arch_key = effective_pair_key(card, colors)
     arch_stats = stats.get(arch_key, {}) if arch_key != "All Decks" else {}
     arch_wr = float(arch_stats.get("gihwr") or 0.0) if arch_stats else global_wr
@@ -314,9 +323,13 @@ def card_wr_posteriors(card, colors, metrics=None):
         "global_wr": global_wr,
         "arch_wr": arch_wr,
         "n": n,
+        "n_global": n_global,
         "arch_prior": global_wr + offset,
-        "shrunk_global": shrunk_wr(global_wr, feature_prior_wr, n),
-        "shrunk_arch": shrunk_wr(arch_wr, feature_prior_wr + offset, n),
+        "shrunk_global": shrunk_wr(global_wr, feature_prior_wr, n_global),
+        # no pair data: the arch posterior IS the global posterior (global
+        # evidence + prior), never an unshrunk 3-game raw rate
+        "shrunk_arch": shrunk_wr(arch_wr, feature_prior_wr + offset,
+                                 n if n > 0 else n_global),
         "pair_offset": offset,
         "prior_z": prior_z,
     }
@@ -465,7 +478,10 @@ def calculate_holistic_score(deck, colors, pool_size, metrics, tier_data=None):
     if spell_count == 0:
         return 0.0, ""
 
-    # Dataset deck_colors keys are WUBRG-ordered ("UB", not "BU").
+    # Dataset deck_colors keys are WUBRG-ordered ("UB", not "BU"). The full
+    # color context flows into get_card_rating: in 3+ color decks each card
+    # is priced under its OWN best pair (effective_pair_key), not under a
+    # positional truncation of the deck's colors.
     arch_key = normalize_color_string(
         "".join(colors) if len(colors) <= 2 else "".join(colors[:2])
     )
@@ -476,7 +492,7 @@ def calculate_holistic_score(deck, colors, pool_size, metrics, tier_data=None):
     ratings = []
     for c in spells:
         for _ in range(c.get("count", 1)):
-            rating = get_card_rating(c, [arch_key], metrics)
+            rating = get_card_rating(c, colors, metrics)
             ratings.append(rating if rating > 0.0 else replacement_level)
 
     avg_gihwr = (

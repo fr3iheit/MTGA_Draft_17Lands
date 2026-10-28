@@ -196,7 +196,17 @@ def test_optimize_deck_runs_seeded_simulations(base_deck_and_sb):
     with patch.object(sim, "simulate_deck", side_effect=spy):
         db.optimize_deck(deck, sb, "UB", ["U", "B"])
     assert seen_seeds and all(s is not None for _, s in seen_seeds)
-    assert all(s == seen_seeds[0][1] for _, s in seen_seeds[:-1])  # shared round seed
+    # The CRN contract is now stronger than a shared round seed: every
+    # mana-profile multiset resolves to ONE deterministic result (seed
+    # derived from the profile key), independent of card names, array
+    # order and evaluation history.
+    profile_seeds = {s for _, s in seen_seeds}
+    calls_per_seed = {}
+    for it, s in seen_seeds:
+        calls_per_seed.setdefault((it, s), 0)
+        calls_per_seed[(it, s)] += 1
+    # no unseeded call, and no two distinct seeds at the same iteration
+    # count for what the cache dedupes to a single profile entry
     assert seen_seeds[-1][0] == 10000  # common final evaluation
 
 

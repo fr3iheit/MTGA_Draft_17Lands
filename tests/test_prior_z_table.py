@@ -81,7 +81,7 @@ def test_card_wr_posteriors_carries_prior():
                             "WR": {"gihwr": 58.0, "samples": 50}}}
     post = _ds.card_wr_posteriors(card, ["W", "R"])
     assert abs(post["prior_z"] - 2.3569) < 1e-3
-    # target = 60 + 2.3569*4 = 69.43; n=50 -> 69.43 + (60-69.43)*50/400
-    assert post["shrunk_global"] == pytest.approx(69.43 - 9.43 * 50 / 400, abs=0.02)
-    assert post["shrunk_arch"] == pytest.approx(
-        69.43 - 11.43 * 50 / 400, abs=0.02)
+    # global posterior uses the GLOBAL count (n=500): 69.43 + (60-69.43)*500/850
+    assert post["shrunk_global"] == pytest.approx(69.43 - 9.43 * 500 / 850, abs=0.02)
+    # arch posterior uses the pair count (n=50): 69.43 + (58-69.43)*50/400
+    assert post["shrunk_arch"] == pytest.approx(69.43 - 11.43 * 50 / 400, abs=0.02)

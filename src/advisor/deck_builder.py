@@ -479,13 +479,22 @@ def _finalist_mana_base(deck_cards, pool, identity_colors, metrics):
 _MC_CACHE = {}
 
 
-def _mc_simulation(deck_cards, iterations, seed):
+def _mc_simulation(deck_cards, iterations, seed=None):
+    """CRN simulation keyed by the mana-profile multiset ALONE. Decks the
+    simulator cannot distinguish (identical parsed profiles) get IDENTICAL
+    stats: common random numbers across candidates, independent of card
+    names (name-derived seeds used to reward pure simulation noise) and of
+    array order (cache history used to change candidate scores). The
+    effective seed derives from the profile key, so even cache-cold results
+    are independent of evaluation order across processes."""
+    import zlib
+
     from src.advisor.simulator import _parse_deck_to_arrays, simulate_deck
 
     arrays = _parse_deck_to_arrays(deck_cards)
     if arrays is None:
         return simulate_deck(deck_cards, iterations=iterations, seed=seed)
-    profiles = sorted(
+    per_card = [
         (
             bool(arrays.is_land[i]),
             bool(arrays.is_ramp[i]),
@@ -497,11 +506,19 @@ def _mc_simulation(deck_cards, iterations, seed):
             int(arrays.generic[i]),
         )
         for i in range(len(arrays.costs))
-    )
-    key = (tuple(profiles), iterations, seed)
+    ]
+    key = (tuple(sorted(per_card)), iterations)
     if key in _MC_CACHE:
         return _MC_CACHE[key]
-    stats = simulate_deck(deck_cards, iterations=iterations, seed=seed)
+    # canonical simulation order for the profile multiset (indices are over
+    # expanded card copies, not unique rows)
+    copies = []
+    for c in deck_cards:
+        copies.extend([c] * int(c.get("count", 1)))
+    order = sorted(range(len(per_card)), key=lambda i: per_card[i])
+    canonical = [copies[i] for i in order]
+    profile_seed = zlib.crc32(str(key[0]).encode("utf-8")) % (2 ** 31)
+    stats = simulate_deck(canonical, iterations=iterations, seed=profile_seed)
     if len(_MC_CACHE) < 4096:
         _MC_CACHE[key] = stats
     return stats
@@ -548,10 +565,12 @@ def candidate_is_legal(deck_cards, pool):
     if spell_count not in SEARCH_CLASS_SPELLS:
         return False
     owned = _owned_counts(pool)
-    for c in deck_cards:
-        if _is_basic_land(c):
+    present = _owned_counts(deck_cards)
+    for name, count in present.items():
+        card = next(c for c in deck_cards if c.get("name", "") == name)
+        if _is_basic_land(card):
             continue
-        if c.get("count", 1) > owned.get(c.get("name", ""), 0):
+        if count > owned.get(name, 0):
             return False
     return True
 
@@ -700,10 +719,17 @@ def _class_probe(seed_deck, pool, identity_colors, target_spells):
         if not candidates:
             return None
         best_add = max(candidates, key=lambda c: get_card_rating(c, identity_colors))
-        added = dict(best_add)
-        added["count"] = 1
+        merged = [dict(c) for c in spells]
+        for c in merged:
+            if c.get("name") == best_add.get("name"):
+                c["count"] = c.get("count", 1) + 1
+                break
+        else:
+            added = dict(best_add)
+            added["count"] = 1
+            merged.append(added)
         return _with_land_split(
-            spells + [added], nonbasics, identity_colors, lands - 1
+            merged, nonbasics, identity_colors, lands - 1
         )
 
     return None
@@ -865,17 +891,12 @@ def hill_climb_search(
     progress_callback=None,
 ):
     """3.3: hill-climb seeded from each surviving variant. Round-robin under
-    one shared budget (an evaluation-count cap when given — the deterministic
-    test mode — otherwise a wall-clock deadline), CRN seeds per candidate,
-    acceptance requires clearing the paired-noise margin, and every seed
-    always stays a candidate: the search can only add, never replace with
-    something worse. Returns one best deck per seed."""
-    import time
-
-    # Deterministic by default: a fixed evaluation budget per call (same
-    # pool -> same emitted decks); the wall-clock deadline is only a safety
-    # guard for slow machines, not the primary stop.
-    start = time.monotonic()
+    one shared evaluation budget, CRN seeds per candidate, acceptance
+    requires clearing the paired-noise margin, and every seed always stays
+    a candidate: the search can only add, never replace with something
+    worse. Returns one best deck per seed. The stop is budget-only: any
+    wall-clock dependence would make the selected deck vary with machine
+    speed."""
     budgets = max_evals
     evals = 0
     best_per_seed = []
@@ -888,9 +909,10 @@ def hill_climb_search(
             neighbors = list(search_neighbors(incumbent, pool, deck_color_identity(incumbent)))
             accepted = False
             for cand in neighbors:
-                if evals >= budgets or (
-                    time.monotonic() - start > deadline_s
-                ):
+                if evals >= budgets:
+                    # budget-only stop: a wall-clock deadline here made the
+                    # SELECTED DECK depend on machine speed (adversarial
+                    # round: identical inputs, different results)
                     exhausted = True
                     break
                 cand_score, _, cand_identity = _search_score(cand, pool_size, metrics)
@@ -952,17 +974,20 @@ def suggest_deck(
             sorted([f"{c.get('name', '')}:{c.get('count', 1)}" for c in taken_cards])
         )
         def _stats_sig(cards):
+            # EVERY stat slice that feeds the scorers (all pairs, not just
+            # All Decks): a pair-only WR change must invalidate the cache
             parts = []
             for c in cards:
                 dc = c.get("deck_colors", {})
-                g = dc.get("All Decks", {})
-                parts.append(
-                    "{}:{}/{}".format(
-                        c.get("name", ""),
-                        g.get("gihwr", 0),
-                        g.get("samples", 0),
+                for pair, st in sorted(dc.items()):
+                    parts.append(
+                        "{}|{}:{}/{}".format(
+                            c.get("name", ""),
+                            pair,
+                            st.get("gihwr", 0),
+                            st.get("samples", 0),
+                        )
                     )
-                )
             import zlib as _zlib
 
             return _zlib.crc32(";".join(sorted(parts)).encode("utf-8"))
@@ -1298,6 +1323,9 @@ def suggest_deck(
                     rating=best_score,
                     stats=stats_s or data.get("stats"),
                     identity_colors=identity_s,
+                    # the sideboard follows the FINAL deck: pool minus deck,
+                    # never the seed's stale remainder
+                    sideboard_cards=get_sideboard(taken_cards, best),
                     label_prefix=f"Searched {data.get('label_prefix', '')}",
                 )
                 final_list.insert(0, (f"🔎 {label}", searched))
@@ -1331,6 +1359,7 @@ def suggest_deck(
                         rating=p_score,
                         stats=p_stats,
                         identity_colors=p_identity,
+                        sideboard_cards=get_sideboard(taken_cards, probe),
                         label_prefix=f"{target}-Spell Probe",
                     )
                     final_list.append((f"⚖ {target} Spells", probed))
