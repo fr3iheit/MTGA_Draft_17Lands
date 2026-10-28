@@ -371,8 +371,12 @@ def get_card_rating(card, colors, metrics=None, tier_data=None):
     arch_wr = float(stats.get(arch_key, {}).get("gihwr") or 0.0)
 
     post = card_wr_posteriors(card, colors, metrics)
+    # Each estimate gates on ITS OWN evidence count: the arch posterior on
+    # the pair's n, the global posterior on the global n. A card with three
+    # global games and no pair games gets the prior-weighted global value,
+    # not its raw 3-game rate (adversarial T1, consumer side).
     arch_v = post["shrunk_arch"] if post["n"] > 0 else arch_wr
-    global_v = post["shrunk_global"] if post["n"] > 0 else global_wr
+    global_v = post["shrunk_global"] if post["n_global"] > 0 else global_wr
     if arch_wr > 30.0 and global_wr > 30.0:
         return (arch_v * 0.7) + (global_v * 0.3)
     elif global_wr > 30.0:
