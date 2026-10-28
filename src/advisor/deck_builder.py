@@ -647,10 +647,19 @@ def search_neighbors(deck_cards, pool, identity_colors):
                     new_spells, nonbasics, identity_colors, lands_total
                 )
         if n_spells < 24:
-            ic = dict(in_card)
-            ic["count"] = 1
+            # merge into an existing row instead of appending a duplicate:
+            # duplicate rows broke the aggregate ownership math (A3)
+            merged = [dict(c) for c in spells]
+            for c in merged:
+                if c.get("name") == in_card.get("name"):
+                    c["count"] = c.get("count", 1) + 1
+                    break
+            else:
+                ic = dict(in_card)
+                ic["count"] = 1
+                merged.append(ic)
             yield _with_land_split(
-                spells + [ic], nonbasics, identity_colors, lands_total - 1
+                merged, nonbasics, identity_colors, lands_total - 1
             )
     if n_spells > 22:
         for s in spells:
