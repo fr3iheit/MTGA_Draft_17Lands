@@ -479,6 +479,41 @@ def _finalist_mana_base(deck_cards, pool, identity_colors, metrics):
 _MC_CACHE = {}
 
 
+def _mana_profiles(arrays):
+    """Per-copy mana profile tuples, aligned with the expanded card copies."""
+    return [
+        (
+            bool(arrays.is_land[i]),
+            bool(arrays.is_ramp[i]),
+            bool(arrays.is_removal[i]),
+            int(arrays.costs[i]),
+            int(arrays.mana_produced[i]),
+            tuple(int(v) for v in arrays.pips[i]),
+            int(arrays.pip_count[i]),
+            int(arrays.generic[i]),
+        )
+        for i in range(len(arrays.costs))
+    ]
+
+
+def _canonical_sim_deck(deck_cards, per_card=None):
+    """The deck as count-1 copies in canonical (profile-sorted) order —
+    what the simulator should be fed so profile-identical decks behave
+    identically and rows never multiply."""
+    from src.advisor.simulator import _parse_deck_to_arrays
+
+    if per_card is None:
+        arrays = _parse_deck_to_arrays(deck_cards)
+        if arrays is None:
+            return list(deck_cards)
+        per_card = _mana_profiles(arrays)
+    copies = []
+    for c in deck_cards:
+        copies.extend([dict(c, count=1)] * int(c.get("count", 1)))
+    order = sorted(range(len(per_card)), key=lambda i: per_card[i])
+    return [copies[i] for i in order]
+
+
 def _mc_simulation(deck_cards, iterations, seed=None):
     """CRN simulation keyed by the mana-profile multiset ALONE. Decks the
     simulator cannot distinguish (identical parsed profiles) get IDENTICAL
@@ -494,31 +529,11 @@ def _mc_simulation(deck_cards, iterations, seed=None):
     arrays = _parse_deck_to_arrays(deck_cards)
     if arrays is None:
         return simulate_deck(deck_cards, iterations=iterations, seed=seed)
-    per_card = [
-        (
-            bool(arrays.is_land[i]),
-            bool(arrays.is_ramp[i]),
-            bool(arrays.is_removal[i]),
-            int(arrays.costs[i]),
-            int(arrays.mana_produced[i]),
-            tuple(int(v) for v in arrays.pips[i]),
-            int(arrays.pip_count[i]),
-            int(arrays.generic[i]),
-        )
-        for i in range(len(arrays.costs))
-    ]
+    per_card = _mana_profiles(arrays)
     key = (tuple(sorted(per_card)), iterations)
     if key in _MC_CACHE:
         return _MC_CACHE[key]
-    # canonical simulation order for the profile multiset (indices are over
-    # expanded card copies, not unique rows)
-    copies = []
-    for c in deck_cards:
-        # count=1 per copy: simulate_deck re-expands rows by count, so a
-        # raw row here would multiply (9 Islands -> 81 copies)
-        copies.extend([dict(c, count=1)] * int(c.get("count", 1)))
-    order = sorted(range(len(per_card)), key=lambda i: per_card[i])
-    canonical = [copies[i] for i in order]
+    canonical = _canonical_sim_deck(deck_cards, per_card)
     profile_seed = zlib.crc32(str(key[0]).encode("utf-8")) % (2 ** 31)
     stats = simulate_deck(canonical, iterations=iterations, seed=profile_seed)
     if len(_MC_CACHE) < 4096:
@@ -801,10 +816,18 @@ def _paired_epsilon(incumbent, challenger, k=3, trials=300):
     zero, acceptance still requires a strict improvement."""
     import statistics
 
+    from src.advisor.simulator import simulate_deck
+
     diffs = []
     for i in range(k):
-        a = _mc_simulation(incumbent, trials, 97000 + i)
-        b = _mc_simulation(challenger, trials, 97000 + i)
+        # Direct simulation with EXPLICIT common seeds: the profile-keyed
+        # cache ignores passed seeds, which used to collapse every trial to
+        # the same draw (epsilon identically zero). Paired trials must
+        # actually resample.
+        a = simulate_deck(_canonical_sim_deck(incumbent),
+                          iterations=trials, seed=97000 + i)
+        b = simulate_deck(_canonical_sim_deck(challenger),
+                          iterations=trials, seed=97000 + i)
         if a and b:
             diffs.append(_mana_fitness(b) - _mana_fitness(a))
     if len(diffs) < 2:

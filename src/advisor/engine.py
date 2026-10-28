@@ -12,6 +12,7 @@ import re
 from typing import List, Dict, Any, Tuple
 from src.advisor.schema import Recommendation
 from src import constants
+from src.advisor.deck_scorer import SHRINKAGE_K
 from src.card_utils import get_functional_cmc
 from src.advisor.deck_scorer import SHRINKAGE_K
 
@@ -215,13 +216,20 @@ class DraftAdvisor:
                     else True
                 )
                 if len(self.main_colors) >= 2:
-                    arch_wr = float(
-                        card.get("deck_colors", {})
-                        .get(self.main_archetype, {})
-                        .get("gihwr", 0.0)
+                    arch_stats = (
+                        card.get("deck_colors", {}).get(self.main_archetype, {})
                     )
-                    if arch_wr > 0.0:
-                        delta = arch_wr - raw_gihwr
+                    arch_wr = float(arch_stats.get("gihwr", 0.0))
+                    pair_n = int(arch_stats.get("samples", 0) or 0)
+                    if arch_wr > 0.0 and pair_n >= 30:
+                        # Reliability-adjusted synergy: a one-game 100% pair
+                        # record used to add delta*5 on its RAW gap (a common
+                        # outranking established bombs). The pair edge counts
+                        # only as far as its own sample size supports.
+                        shrunk_pair = raw_gihwr + (arch_wr - raw_gihwr) * (
+                            pair_n / (pair_n + SHRINKAGE_K)
+                        )
+                        delta = shrunk_pair - raw_gihwr
 
                         # GLUE CARD DETECTION:
                         # If a Common/Uncommon heavily outperforms its global average in our specific lane,
