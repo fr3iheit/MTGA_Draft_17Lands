@@ -46,12 +46,15 @@ def test_face_index_consistency():
     # row keeps its own value (collision rule); otherwise it aliases the full
     # split name's row
     data = np.load(ASSETS / "card_prior_z_table.npz", allow_pickle=False)
-    originals = {str(n).lower().replace("’", "'").strip() for n in data["names"]}
+    originals = {_ds._norm_card_name(str(n)) for n in data["names"]}
     full = {k: v for k, v in _ds._PRIOR_Z_TABLE.items() if " // " in k}
     assert len(full) > 100
     checked = 0
     for k, v in full.items():
-        for part in k.split(" // "):
+        parts = [p for p in k.split(" // ") if p]
+        if len(parts) > 1 and len(set(parts)) == 1:
+            continue  # degenerate repeated-name row: no face alias (R2-3)
+        for part in parts:
             if part in originals:
                 continue  # standalone row wins by design
             got = _ds._PRIOR_Z_TABLE.get(part)

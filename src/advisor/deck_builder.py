@@ -465,7 +465,16 @@ def _finalist_mana_base(deck_cards, pool, identity_colors, metrics):
             )
 
     forced = max(0, 40 - sum(c.get("count", 1) for c in spells + nonbasics))
-    basics = mb.brute_force_mana_base(spells, nonbasics, identity_colors, forced_count=forced)
+    # The optimization colors are every color the deck's SPELL COSTS require,
+    # not just the archetype identity: identity deliberately ignores
+    # incidental single pips, which used to strip the only source for a
+    # retained splash card (a red bomb kept with zero red sources).
+    cast_colors = sorted({
+        col
+        for c in spells
+        for col in (c.get("colors") or [])
+    } | set(identity_colors))
+    basics = mb.brute_force_mana_base(spells, nonbasics, cast_colors, forced_count=forced)
     if not basics:
         return deck_cards
     return spells + nonbasics + basics
@@ -882,8 +891,12 @@ def beam_search(
 
         beam = [(seed_score, _canonical_key(seed_deck), seed_deck)]
         seen = {_canonical_key(seed_deck)}
-        improved = True
-        while improved and evals < max_evals:
+        # Frontier continuation is decoupled from incumbent acceptance: a
+        # plateau layer (no guarded improvement) still holds viable states —
+        # the synergy payoff can be two NEUTRAL swaps away. Budget and the
+        # seen-set bound the expansion; guarded acceptance still protects
+        # the incumbent.
+        while evals < max_evals:
             improved = False
             candidates = []
             for score, _key, deck in beam:
@@ -1007,6 +1020,15 @@ def suggest_deck(
     pool_size = len(taken_cards)
     is_bo3 = "Trad" in event_type
 
+    # Canonical processing order (name, count): builder selection breaks
+    # rating ties by list position, which made the EMITTED deck depend on
+    # the pool's arrival order even though the cache identity is
+    # order-insensitive (fresh adversarial round F2).
+    taken_cards = sorted(
+        taken_cards,
+        key=lambda c: (c.get("name", ""), c.get("count", 1)),
+    )
+
     playable_spells = [c for c in taken_cards if "Land" not in c.get("types", [])]
     if not playable_spells or len(playable_spells) < 15:
         return sorted_decks
@@ -1034,12 +1056,33 @@ def suggest_deck(
 
             return _zlib.crc32(";".join(sorted(parts)).encode("utf-8"))
 
+        def _cost_sig(cards):
+            parts = []
+            for c in cards:
+                parts.append(
+                    "{}:{}:{}".format(
+                        c.get("name", ""),
+                        c.get("mana_cost", ""),
+                        c.get("cmc", 0),
+                    )
+                )
+            import zlib as _zlib
+
+            return _zlib.crc32(";".join(sorted(parts)).encode("utf-8"))
+
+        metrics_sig = None
+        try:
+            metrics_sig = metrics.get_metrics("All Decks", "gihwr") if metrics else None
+        except Exception:
+            metrics_sig = None
         cache_key = (
             event_type,
             dataset_name,
             len(taken_cards),
             pool_sig,
             _stats_sig(taken_cards),
+            _cost_sig(taken_cards),
+            tuple(metrics_sig) if metrics_sig else None,
         )
 
         if cache_key in GLOBAL_DECK_CACHE:
@@ -1419,7 +1462,19 @@ def suggest_deck(
         except Exception as e:
             logger.warning(f"Deck search error: {e}")
 
+        # Publication: re-rank the completed list by FINAL rating and rebuild
+        # the derived display fields (record, Power label). Search results and
+        # probes used to be spliced in iteration order with their seed's
+        # stale label — the panel picks the first row, which was not always
+        # the best final deck (fresh adversarial round R3-2).
+        final_list.sort(key=lambda kv: -kv[1].get("rating", 0.0))
         for label, data in final_list:
+            rating = data.get("rating", 0.0)
+            record = estimate_record(rating, is_bo3)
+            data["record"] = record
+            if "(Power:" in label:
+                head = label.split("(Power:")[0].rstrip()
+                label = f"{head}(Power: {rating:.0f})"
             sorted_decks[label] = data
 
         GLOBAL_DECK_CACHE[cache_key] = sorted_decks

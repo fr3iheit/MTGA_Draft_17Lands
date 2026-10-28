@@ -12,9 +12,9 @@ import re
 from typing import List, Dict, Any, Tuple
 from src.advisor.schema import Recommendation
 from src import constants
-from src.advisor.deck_scorer import SHRINKAGE_K
+from src.advisor.deck_scorer import SHRINKAGE_K, _table_prior_z
 from src.card_utils import get_functional_cmc
-from src.advisor.deck_scorer import SHRINKAGE_K
+from src.advisor.deck_scorer import SHRINKAGE_K, _table_prior_z
 
 # (pool_signature, card_name) -> improvement bonus for the pack-3 lookahead:
 # the same pool + candidate card recurs every UI refresh, and the heuristic
@@ -687,9 +687,15 @@ class DraftAdvisor:
     def _calculate_weighted_score(self, card: Dict, pick_number: int) -> float:
         try:
             if not self.set_has_data:
-                # Day 1 before any data exists: pure metadata heuristics on the
-                # same GIHWR-like scale (40-68) — the identical fallback
-                # deck_scorer.get_card_rating uses.
+                # Day 1 before any data exists. The shipped card prior still
+                # speaks here: what the card DOES predicts its expected z, and
+                # a table hit beats metadata heuristics (fresh adversarial
+                # round: the prior was advertised for exactly this state but
+                # never consulted in it). Pure heuristics remain for cards
+                # outside the table.
+                prior_z = _table_prior_z(card)
+                if prior_z:
+                    return max(0.0, 50.0 + prior_z * 15.0)
                 from src.sealed_logic import HeuristicEvaluator
 
                 h = HeuristicEvaluator.evaluate(card)
@@ -716,11 +722,17 @@ class DraftAdvisor:
             trusted_arch_wr = (
                 post["shrunk_arch"] if post["n"] > 0 else arch_wr
             )
+            # The GLOBAL side of the blend is the posterior too: the raw rate
+            # let a one-game 100% spike outrank established bombs in the
+            # base score (fresh adversarial round R1).
+            trusted_global_wr = (
+                post["shrunk_global"] if post["n_global"] > 0 else global_wr
+            )
 
             blended_wr = (
-                (global_wr * (1.0 - arch_weight)) + (trusted_arch_wr * arch_weight)
+                (trusted_global_wr * (1.0 - arch_weight)) + (trusted_arch_wr * arch_weight)
                 if (arch_wr > 0 and samples >= 10)
-                else global_wr
+                else trusted_global_wr
             )
 
             base_score = max(

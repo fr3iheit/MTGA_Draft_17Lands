@@ -49,7 +49,12 @@ _PRIOR_Z_CLAMPS = (-2.0, 2.0)  # widened at load from the manifest (floors reach
 def _norm_card_name(s):
     import re as _re
 
-    return _re.sub(r"\s+", " ", (s or "").lower().replace("’", "'")).strip()
+    t = (s or "").lower().replace("’", "'")
+    # split/aftermath separators arrive in several spellings (" // ", "//",
+    # " /// "): normalize to one canonical spaced form so lookups match
+    t = t.replace(" /// ", " // ").replace("///", " // ")
+    t = _re.sub(r"\s*//\s*", " // ", t)
+    return _re.sub(r"\s+", " ", t).strip()
 
 
 def _load_prior_z_table():
@@ -78,10 +83,16 @@ def _load_prior_z_table():
         table = {_norm_card_name(str(nm)): float(zv)
                  for nm, zv in zip(data["names"], data["z"])}
         # face -> full-name index for split/DFC cards ("ice" -> "fire // ice");
-        # exact names always win (a card genuinely named "Fire" keeps its z)
+        # exact names always win (a card genuinely named "Fire" keeps its z).
+        # Repeated-name rows ("A // A" MDFC doubles in the export) are
+        # skipped: their degenerate alias shadows the card's real canonical
+        # row and poisons front-face lookups.
         for nm in list(table):
             if " // " in nm:
-                for part in nm.split(" // "):
+                parts = [p for p in nm.split(" // ") if p]
+                if len(parts) > 1 and len(set(parts)) == 1:
+                    continue
+                for part in parts:
                     table.setdefault(part, table[nm])
         global _PRIOR_Z_CLAMPS
         _PRIOR_Z_CLAMPS = (float(cl[0]), float(cl[1]))
@@ -379,11 +390,20 @@ def get_card_rating(card, colors, metrics=None, tier_data=None):
     # honest values; raw rates only when the card truly has no data
     arch_v = post["shrunk_arch"] if (post["n"] > 0 or post["n_global"] > 0) else arch_wr
     global_v = post["shrunk_global"] if post["n_global"] > 0 else global_wr
-    if arch_wr > 30.0 and global_wr > 30.0:
-        return (arch_v * 0.7) + (global_v * 0.3)
-    elif global_wr > 30.0:
+    has_evidence = post["n"] > 0 or post["n_global"] > 0
+    # Evidence gates on COUNTS: a 0%-in-one-game record still has a real
+    # posterior (the prior dominates it), and throwing it away made an
+    # observed card fall through to the no-data path (rating 0). The raw
+    # >30 value checks remain ONLY for legacy records without counts.
+    if has_evidence:
+        if post["n"] > 0 or arch_wr > 0.0:
+            return (arch_v * 0.7) + (global_v * 0.3)
         return global_v
-    elif arch_wr > 30.0:
+    if arch_wr > 30.0 and global_wr > 30.0:
+        return (arch_wr * 0.7) + (global_wr * 0.3)
+    if global_wr > 30.0:
+        return global_v
+    if arch_wr > 30.0:
         return arch_v
 
     if tier_data:
@@ -396,6 +416,21 @@ def get_card_rating(card, colors, metrics=None, tier_data=None):
                     tier_scores.append(score)
         if tier_scores:
             return sum(tier_scores) / len(tier_scores)
+
+    # No observed data of its own. Before anything else, the shipped prior
+    # speaks: what the card DOES predicts its expected z (a table hit IS the
+    # rating evidence — this is the cold-start path the prior exists for).
+    prior_z = _table_prior_z(card) or 0.0
+    if prior_z and not set_has_data:
+        g_std = 4.0
+        try:
+            if metrics:
+                _m, _s = metrics.get_metrics("All Decks", "gihwr")
+                if _s and _s > 0:
+                    g_std = float(_s)
+        except Exception:
+            pass
+        return global_mean + prior_z * g_std
 
     # In an established format (the set already has win-rate data), a card with
     # no data of its own is one nobody drafts or plays — effectively unplayable

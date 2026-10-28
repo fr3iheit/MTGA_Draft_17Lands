@@ -62,7 +62,8 @@ data, Scryfall and Forge snapshots, ~1.8GB). The export contract is:
   to the manifest bounds), `feature_names` (documentation only).
 - `card_prior_z_table_manifest.json`: schema, provenance notes, `n_cards`,
   `n_lifted`, `z_clamps`. The loader refuses to publish the table if the
-  manifest is missing or malformed (atomic fallback to the set mean).
+  manifest is missing or malformed; the fallback chain then runs v1
+  live-extractor models (if their assets load) and finally the set mean.
 
 ## Precedence and fallback
 
