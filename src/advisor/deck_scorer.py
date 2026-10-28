@@ -506,6 +506,20 @@ def identify_top_pairs(pool, metrics, tier_data=None):
         if ranked[0][1] <= 0.0:
             return []
         top_4_colors = [c for c, _ in ranked[:4]]
+        # SEALED / five-color pools: when a fifth color qualifies AND is
+        # substantially deeper than a qualifying top-4 color, swap it in —
+        # average quality must not sideboard a 21-playable lane while a
+        # shallower color builds a two-card variant. Depth is the number
+        # of eligible playables; the swap is bounded (one color, only
+        # when the depth gap is at least 5 cards).
+        if len(qualifying) > 4:
+            excluded = [c for c in qualifying if c not in top_4_colors]
+            for exc in excluded:
+                shallowest = min(top_4_colors, key=lambda c: eligible[c])
+                if eligible[exc] >= eligible[shallowest] + 5:
+                    top_4_colors.remove(shallowest)
+                    top_4_colors.append(exc)
+                    break
     else:
         sorted_c = sorted(raw_scores.items(), key=lambda x: x[1], reverse=True)
         if sorted_c[0][1] <= 0.0:

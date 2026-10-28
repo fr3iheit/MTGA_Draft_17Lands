@@ -271,8 +271,18 @@ def optimize_deck(base_deck, base_sb, archetype_key, colors):
             if gain > best_gain:
                 best_gain = gain
                 extra_color = color_map_inv.get(name, "W")
-        synth_extra = create_basic_lands(extra_color, 1)[0]
-        d = list(d_cut) + [synth_extra]
+        # Merge the extra basic into an existing row: appending a separate
+        # count-1 row for a basic already in the deck meant repeated
+        # Auto-Optimize calls grew the deck (40 -> 42 -> rejected).
+        d = [dict(c) for c in d_cut]
+        basic_name = {"W": "Plains", "U": "Island", "B": "Swamp",
+                      "R": "Mountain", "G": "Forest", "C": "Wastes"}[extra_color]
+        for c in d:
+            if c.get("name") == basic_name:
+                c["count"] = c.get("count", 1) + 1
+                break
+        else:
+            d.append(create_basic_lands(extra_color, 1)[0])
         cut_to_sb = dict(worst_spell)
         cut_to_sb["count"] = 1
         s = list(s_cut) + [cut_to_sb]
