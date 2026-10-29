@@ -301,7 +301,8 @@ class ManaSourceAnalyzer:
             # fixing (W=1 U=1 R=1...) which is wrong: {C} pays colorless
             # costs, not colored ones.
             if _re.search(r"add[s]?\s*\{c\}", text):
-                self.colorless_sources += count
+                # count colorless production ONCE — the generic nonland
+                # path below also counts it, which used to double-count
                 self.total_fixing_cards += count
             elif produces_specific:
                 self.total_fixing_cards += count
@@ -319,7 +320,7 @@ class ManaSourceAnalyzer:
                     self.any_color_enabler_pips[c] += count
             return
 
-        if "add {c}" in text or "adds {c}" in text or "add {c}{c}" in text:
+        if re.search(r"add[s]?\s*\{c\}", text):
             self.colorless_sources += count
 
         if is_land and "Basic" not in types:
