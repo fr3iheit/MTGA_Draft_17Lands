@@ -1447,7 +1447,7 @@ def suggest_deck(
                 _, stats_s, identity_s = _search_score(best, pool_size, metrics)
                 searched = dict(data)
                 searched.update(
-                    deck_cards=best,
+                    deck_cards=stack_cards(best),
                     rating=best_score,
                     stats=stats_s or data.get("stats"),
                     identity_colors=identity_s,
@@ -1494,7 +1494,7 @@ def suggest_deck(
                     )
                     probed = dict(final_list[0][1])
                     probed.update(
-                        deck_cards=probe,
+                        deck_cards=stack_cards(probe),
                         rating=p_score,
                         stats=p_stats,
                         identity_colors=p_identity,
@@ -1512,6 +1512,14 @@ def suggest_deck(
         # the best final deck (fresh adversarial round R3-2).
         final_list.sort(key=lambda kv: -kv[1].get("rating", 0.0))
         for label, data in final_list:
+            # sort the deck for display: spells by CMC, then lands
+            deck_cards = data.get("deck_cards", [])
+            spells = sorted(
+                [c for c in deck_cards if "Land" not in c.get("types", [])],
+                key=lambda c: (c.get("cmc", 0), c.get("name", "")),
+            )
+            lands = [c for c in deck_cards if "Land" in c.get("types", [])]
+            data["deck_cards"] = spells + lands
             rating = data.get("rating", 0.0)
             record = estimate_record(rating, is_bo3)
             data["record"] = record
