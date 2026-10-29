@@ -132,11 +132,8 @@ def _parse_deck_to_arrays(deck_list):
             and not ("fixing_ramp" in tags or any_color or "treasure" in text)
             and c.get("cmc", 0) in (0, 1)
             and len(c.get("colors", [])) == 1
-            and (
-                re.search(r"\badd\s*\{", text) is not None
-                if text
-                else True  # no oracle_text in cube data: heuristic on
-            )
+            and text
+            and re.search(r"\badd\s*\{", text) is not None
         )
         is_ramp[i] = (
             (

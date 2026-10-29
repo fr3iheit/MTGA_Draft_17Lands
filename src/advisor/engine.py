@@ -28,14 +28,18 @@ logger = logging.getLogger(__name__)
 
 
 def _has_hybrid_route(card, lane_colors):
-    """A hybrid cost ({U/B}) is castable if EITHER color is in the lane."""
+    """True when the card's single OFF-COLOR pip is itself a hybrid ({U/B}):
+    payable through either color. A payable hybrid elsewhere must NOT
+    excuse an unrelated solid off-color pip."""
     import re as _re
 
     cost = str(card.get("mana_cost", ""))
-    for pip in _re.findall(r"\{(\w)/(\w)\}", cost):
-        if any(c in lane_colors for c in pip):
-            return True
-    return False
+    off_color = []
+    for sym in _re.findall(r"\{(.*?)\}", cost):
+        opts = [c for c in sym.split("/") if c in "WUBRG"]
+        if opts and not any(o in lane_colors for o in opts):
+            off_color.append(sym)
+    return len(off_color) == 1 and "/" in off_color[0]
 
 
 class DraftAdvisor:
