@@ -5,6 +5,7 @@ Frank Karsten mathematically-optimized mana base generation and source analysis.
 
 import itertools
 import re
+import re as _re
 from src import constants
 
 
@@ -295,7 +296,14 @@ class ManaSourceAnalyzer:
                 ):
                     self.sources[c_sym] += count
                     produces_specific = True
-            if produces_specific:
+            # Colorless production ({C}) is specific — NOT universal.
+            # Sol Ring with the fixing_ramp tag used to become any-color
+            # fixing (W=1 U=1 R=1...) which is wrong: {C} pays colorless
+            # costs, not colored ones.
+            if _re.search(r"add[s]?\s*\{c\}", text):
+                self.colorless_sources += count
+                self.total_fixing_cards += count
+            elif produces_specific:
                 self.total_fixing_cards += count
             else:
                 is_universal = True

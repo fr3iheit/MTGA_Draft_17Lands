@@ -26,6 +26,18 @@ from src.utils import normalize_color_string
 logger = logging.getLogger(__name__)
 
 
+
+def _has_hybrid_route(card, lane_colors):
+    """A hybrid cost ({U/B}) is castable if EITHER color is in the lane."""
+    import re as _re
+
+    cost = str(card.get("mana_cost", ""))
+    for pip in _re.findall(r"\{(\w)/(\w)\}", cost):
+        if any(c in lane_colors for c in pip):
+            return True
+    return False
+
+
 class DraftAdvisor:
     TOTAL_PICKS = 45  # upper bound for the pack-local pick index
     # Projection base: cards in a full draft. Distinct concept from TOTAL_PICKS
@@ -686,7 +698,12 @@ class DraftAdvisor:
                     ):
                         return 0.30, "Greedy Bomb Splash"
 
-            if off_color_pips == 1 and has_specific_fixing:
+            # Hybrid ({U/B}) off-lane: ONE payable route suffices — the
+            # card can be cast through either color. Requiring both
+            # blocked every hybrid splash candidate.
+            if off_color_pips == 1 and (
+                has_specific_fixing or _has_hybrid_route(card, top_2_lane)
+            ):
                 return 0.3, "Splashable"
 
             return 0.01 if pack == 3 else 0.05, "Off-Color"

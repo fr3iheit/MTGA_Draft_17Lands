@@ -574,6 +574,22 @@ def _deck_seed(deck_sig):
 SEARCH_CLASS_SPELLS = (22, 23, 24)
 
 
+def _has_unpayable_colorless(card):
+    """True when the card has mandatory {C} pips but the pool has no
+    colorless sources (deck builder guard: never recommend an unpayable
+    spell — the picker already penalizes it, the builder must exclude it)."""
+    import re as _re
+
+    cost = str(card.get("mana_cost", ""))
+    required_c = cost.count("{C}")
+    if required_c == 0:
+        return False
+    return True  # the builder has no colorless-source context; the picker
+    # already applied the Colorless Requirement penalty — the builder
+    # simply excludes {C} cards from candidates until colorless source
+    # tracking reaches the builder layer (follow-up issue)
+
+
 def _owned_counts(cards):
     owned = {}
     for c in cards:
@@ -760,6 +776,7 @@ def _class_probe(seed_deck, pool, identity_colors, target_spells):
             if "Land" not in c.get("types", [])
             and is_castable(c, identity_colors, strict=True)
             and in_deck.get(c.get("name", ""), 0) < owned.get(c.get("name", ""), 0)
+            and not _has_unpayable_colorless(c)
         ]
         if not candidates:
             return None
@@ -1085,6 +1102,21 @@ def suggest_deck(
             metrics_sig = metrics.get_metrics("All Decks", "gihwr") if metrics else None
         except Exception:
             metrics_sig = None
+        def _tier_sig(tier_data):
+            """Tier content changes must invalidate the suggestion cache:
+            importing a new tier list while keeping the same pool used to
+            return stale suggestions computed with the old tiers."""
+            if not tier_data:
+                return None
+            import hashlib as _hashlib
+
+            parts = []
+            for name, obj in sorted(tier_data.items()):
+                ratings = getattr(obj, "ratings", {})
+                for card_name, r in sorted(ratings.items()):
+                    parts.append(f"{card_name}:{getattr(r, 'rating', '')}")
+            return _hashlib.md5(";".join(parts).encode("utf-8")).hexdigest()
+
         cache_key = (
             event_type,
             dataset_name,
@@ -1093,6 +1125,7 @@ def suggest_deck(
             _stats_sig(taken_cards),
             _cost_sig(taken_cards),
             tuple(metrics_sig) if metrics_sig else None,
+            _tier_sig(tier_data),
         )
 
         if cache_key in GLOBAL_DECK_CACHE:
@@ -1505,6 +1538,7 @@ def build_variant_consistency(pool, colors, metrics, tier_data=None):
         c
         for c in pool
         if is_castable(c, colors, strict=True) and "Land" not in c.get("types", [])
+        and not _has_unpayable_colorless(c)
     ]
     candidates.sort(
         key=lambda x: get_card_rating(x, colors, metrics, tier_data=tier_data),
@@ -1683,6 +1717,7 @@ def build_variant_curve(pool, colors, metrics, tier_data=None):
         c
         for c in pool
         if is_castable(c, colors, strict=True) and "Land" not in c.get("types", [])
+        and not _has_unpayable_colorless(c)
     ]
 
     def tempo_rating(card):

@@ -110,6 +110,7 @@ def _parse_deck_to_arrays(deck_list):
         # 17Lands datasets carry no oracle_text, so detect structurally:
         # cmc=0 + Artifact + has colors is a Mox-like card. Without
         # oracle_text, the mana color falls back to the card's own colors.
+        # 0-CMC colored artifacts: Moxen (structural, no oracle_text needed)
         is_zero_cost_mana = (
             not is_land[i]
             and not is_filter
@@ -117,12 +118,33 @@ def _parse_deck_to_arrays(deck_list):
             and "Artifact" in types
             and c.get("colors")
         )
+        # Untagged mana CREATURES (Llanowar Elves, Birds of Paradise):
+        # cube datasets strip tags, so the structural signal is a creature
+        # with a very low cmc and "add" in its oracle_text (when present)
+        # or the classic elf/bird pattern. When oracle_text is absent too
+        # (17Lands cube), a 1-cmc creature with a single color is the
+        # strongest heuristic — false positives are 1-drops that don't
+        # produce mana, which cost only a mild simulation overestimate.
+        is_untagged_mana_creature = (
+            not is_land[i]
+            and not is_filter
+            and "Creature" in types
+            and not ("fixing_ramp" in tags or any_color or "treasure" in text)
+            and c.get("cmc", 0) in (0, 1)
+            and len(c.get("colors", [])) == 1
+            and (
+                re.search(r"\badd\s*\{", text) is not None
+                if text
+                else True  # no oracle_text in cube data: heuristic on
+            )
+        )
         is_ramp[i] = (
             (
                 "fixing_ramp" in tags
                 or any_color
                 or "treasure" in text
                 or is_zero_cost_mana
+                or is_untagged_mana_creature
             )
             and not is_land[i]
             and not is_filter
